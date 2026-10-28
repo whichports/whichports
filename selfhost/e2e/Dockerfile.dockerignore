@@ -1,0 +1,12 @@
+# What the test images may see. Everything is excluded first.
+*
+!controlplane/app/prober.py
+!controlplane/app/authz.py
+!controlplane/app/ratelimit.py
+!controlplane/app/dnstxt.py
+!controlplane/app/probe_runner.py
+!controlplane/app/workspace.py
+!selfhost/e2e/sshd.conf
+!selfhost/e2e/vantage.py
+!selfhost/e2e/listen.py
+!selfhost/e2e/build/whichports-agent

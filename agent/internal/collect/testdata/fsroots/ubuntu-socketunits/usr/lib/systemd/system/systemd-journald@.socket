@@ -1,0 +1,19 @@
+#  SPDX-License-Identifier: LGPL-2.1-or-later
+#
+#  This file is part of systemd.
+
+[Unit]
+Description=Journal Socket for Namespace %i
+Documentation=man:systemd-journald.service(8) man:journald.conf(5)
+StopWhenUnneeded=yes
+
+[Socket]
+Service=systemd-journald@%i.service
+ListenStream=/run/systemd/journal.%i/stdout
+ListenDatagram=/run/systemd/journal.%i/socket
+ListenDatagram=/run/systemd/journal.%i/dev-log
+SocketMode=0666
+PassCredentials=yes
+PassSecurity=yes
+ReceiveBuffer=8M
+SendBuffer=8M

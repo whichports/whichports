@@ -1,0 +1,122 @@
+# Runs one collection per timer tick. The agent writes the host document to
+# /var/lib/whichports/host.json itself, atomically via a temp file and rename,
+# so a reader never sees a half-written document. Only when this host has been
+# enrolled with `whichports-agent enroll` does it also deliver the same
+# document to the control plane, in one outbound HTTPS POST whose response is
+# never parsed (docs/PRODUCT.md 4f). Un-enrolled, nothing leaves the machine:
+# the timer is purely the local file. There is no shell in this unit and the
+# agent executes nothing (PRODUCT.md 4e).
+#
+# The agent runs as its own system user with exactly two capabilities, because
+# that was measured to be enough: every port, every bind address and every
+# live kernel rule on both distro families (docs/RECORD.md 4.72, and
+# agent/SECURITY-REVIEW.md). What that user cannot read, it reports as
+# permission_denied rather than guessing, and the optional per-file read
+# grants in agent/README.md restore each loss one visible line at a time.
+[Unit]
+Description=whichports host collection
+Documentation=https://whichports.com
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/whichports-agent --mode=timer
+
+# --- who it is --------------------------------------------------------------
+# A dedicated system user, created by the package. Not root, and holding none
+# of root's file or process powers.
+User=whichports-agent
+Group=whichports-agent
+
+# --- what it can become -----------------------------------------------------
+# It cannot gain privilege, and it holds only the two capabilities the network
+# reads actually need. AmbientCapabilities is what hands them to a non-root
+# process, and the bounding set is cut to the same two so nothing in this
+# process can ever hold more.
+#   CAP_NET_ADMIN  the nf_tables netlink dump, and the x_tables getsockopt
+#   CAP_NET_RAW    the AF_INET/AF_INET6 raw socket the getsockopt rides on
+# CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE are gone. They bought one thing,
+# naming the process behind a port, and docs/RECORD.md 4.72 measured that as
+# the only column this unit loses. Since 0.1.10 the unit behind a port comes
+# from the kernel over sock_diag netlink instead, which needs no capability
+# (docs/AGENT-PRIVILEGE.md 4a, docs/RECORD.md 4.169), so nothing is lost.
+NoNewPrivileges=yes
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+
+# --- what it can touch ------------------------------------------------------
+# The whole filesystem is read-only except the one state directory, which the
+# package chowns to this user. /home, /root and /run/user are empty to it,
+# /tmp is its own, and the document is written 0640 into the 0750 state
+# directory.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/whichports
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+UMask=0077
+
+# ProtectProc is left at default on purpose, and the reason changed with the
+# user. As a non-root user the kernel already denies /proc/<pid>/fd on other
+# users' processes, so the process-name column is empty either way
+# (docs/RECORD.md 4.72). Default keeps this unit's view identical to the one
+# that measurement ran under. Tightening it to invisible is a separate change
+# to take with its own measurement, not a free win to grab here.
+ProtectProc=default
+
+# --- what it can do to the kernel and the host ------------------------------
+# Nothing. It reads netfilter state and files; it has no business writing a
+# sysctl, loading a module, reading the kernel log, setting the clock or the
+# hostname, or moving into a new namespace.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+
+# --- what it can execute ----------------------------------------------------
+# It starts no other program (PRODUCT.md 4e). A source scan in
+# agent/internal/safety names the exec wrappers, so adding one means deleting
+# the rule that forbids it, in the open. What that scan cannot see is a raw
+# unix.Syscall6, which the agent already makes for the x_tables getsockopt in
+# internal/collect/iptables_linux.go, so a Syscall6 pointed at execve would
+# pass it. This is the runtime backstop for that one gap. NoExecPaths marks the
+# root tree non-executable and ExecPaths gives back the single binary systemd
+# must still be able to run, the agent. The kernel then refuses to execute
+# anything else no matter which call asked, a raw syscall included.
+#
+# It does not overlap MemoryDenyWriteExecute above. That one denies a mapping
+# that is writable and executable at once, the shape self-modifying and JIT
+# code needs. This denies executable mappings of files by their path. A plain
+# execve of /bin/sh maps read-only executable pages from a file, which
+# MemoryDenyWriteExecute allows and NoExecPaths refuses, so the two close
+# different doors.
+#
+# One ExecPaths entry is the whole list because the binary is a static
+# CGO_ENABLED=0 build (agent/Makefile) with no dynamic loader and no shared
+# library, and Go maps no executable pages at runtime. Its own text is the only
+# executable mapping it makes.
+NoExecPaths=/
+ExecPaths=/usr/bin/whichports-agent
+
+# --- what it can speak ------------------------------------------------------
+# Four families, one reason each, and nothing else. AF_PACKET in particular is
+# absent, so this process cannot see a packet even though it holds CAP_NET_RAW.
+#   AF_NETLINK  the nf_tables ruleset dump
+#   AF_INET     the raw socket for the legacy iptables getsockopt, and delivery
+#   AF_INET6    the same, for ip6tables
+#   AF_UNIX     the Docker and Podman sockets, one GET each
+RestrictAddressFamilies=AF_NETLINK AF_INET AF_INET6 AF_UNIX
+
+# --- what it can ask the kernel for -----------------------------------------
+# @debug stays denied. The process no longer holds CAP_SYS_PTRACE, so this is
+# now a second lock on a door with no key behind it, which is cheap and kept.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@debug @module @mount @reboot @swap @obsolete @cpu-emulation

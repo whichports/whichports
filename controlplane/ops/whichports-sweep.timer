@@ -1,0 +1,19 @@
+# Every five minutes. A third of the agent's own fifteen minute report
+# interval, so a host that goes quiet is noticed well inside one missed cycle,
+# and the sweep is one query over a handful of rows.
+#
+# Persistent, so a box that was off still sweeps once on the way up. That
+# first sweep after a long gap is exactly the case the self-outage guard in
+# app/alerts.py exists for: it holds new silence alerts for one window instead
+# of mailing one per host at once.
+[Unit]
+Description=Schedule the whichports dead-man sweep
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

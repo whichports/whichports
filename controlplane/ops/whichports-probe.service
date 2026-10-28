@@ -1,0 +1,42 @@
+# One probing pass from the vantage host. The engine runs there, the packets
+# leave there, and this box only decides what may be probed and stores what
+# came back (app/dispatch.py).
+#
+# **The floor, not the broad sweep.** It probes the same joined port set the
+# fast lane does, and it exists so a pass still happens if the fast timer is
+# stopped or failing, and so the prober's own dead-man switch has a three hour
+# threshold that means something. The broad sweep of ports nothing reports is
+# a third lane that does not exist yet: choosing its port list and its pace
+# overturns a number in docs/PRODUCT.md section 5, which is the owner's to take.
+# docs/RECORD.md 4.78 has the arithmetic that rules out doing it hourly.
+#
+# **Probing is off until the vantage registry holds an enabled vantage.** The
+# pass reads where to probe from out of the database (app/vantages.py), and
+# with nothing registered it exits 2 and sends nothing, so nothing starts
+# probing anybody because a branch merged. Seed the registry with
+# `python -m app.vantages_cli add` before enabling the timer. Until 2026-09-08
+# this unit read one vantage and one destination from
+# /etc/whichports/prober.env, and that file is no longer read by anything.
+[Unit]
+Description=whichports, one probing pass from the vantage host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/srv/controlplane
+Environment=WHICHPORTS_DB=/var/lib/whichports-controlplane/whichports.db
+ExecStart=/srv/controlplane/.venv/bin/python -m app.prober_cli probe --joined --registry --tls-known
+NoNewPrivileges=yes
+ProtectSystem=strict
+# read-only rather than yes. ssh keeps the key, the config and known_hosts
+# under /home, and ProtectHome=yes replaces /home with an empty directory,
+# so the pass fails with "No ED25519 host key is known" while strict
+# checking is doing exactly its job against a known_hosts it cannot see.
+# BindReadOnlyPaths does not rescue it, measured on 2026-08-18: the bind
+# source is already masked by the time the bind applies. read-only still
+# denies every write to /home, which is the half that matters here.
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/whichports-controlplane

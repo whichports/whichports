@@ -1,0 +1,9 @@
+# Local virtualenv and caches
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Local databases: the dev database and SQLite's WAL sidecars
+*.db
+*.db-wal
+*.db-shm

@@ -1,0 +1,41 @@
+# The on-demand scan responder. whichports-scan.path starts it when the ingest
+# writes the trigger file. It drains every pending scan request, probing each
+# host's joined port set from the vantage host, exactly as the fast lane does
+# (app/scan_cli.py).
+#
+# It runs as deploy with an ssh channel to the vantage host, the same as the
+# probe units, because probing happens there and never here (app/dispatch.py,
+# the direction of trust). The ingest process, which the internet can reach, has
+# no ssh access and never gets one, so it cannot probe. It only records the
+# request and touches the trigger this unit watches.
+#
+# A burst of scans coalesces because whichports-scan.path will not re-run this
+# while it is still active, and without these units installed the request is
+# still covered by the next fast-lane pass within about ten minutes. So the
+# feature is honest whether or not the trigger units are on the box.
+[Unit]
+Description=whichports, respond to an on-demand scan request
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/srv/controlplane
+Environment=WHICHPORTS_DB=/var/lib/whichports-controlplane/whichports.db
+# Where to probe from comes out of the vantage registry (app/vantages.py), the
+# same one the probe units read, so a rebuilt or added box is one command on
+# the control plane and no unit changes.
+ExecStart=/srv/controlplane/.venv/bin/python -m app.scan_cli drain --registry --tls-known
+NoNewPrivileges=yes
+ProtectSystem=strict
+# read-only rather than yes. ssh keeps the key, the config and known_hosts
+# under /home, and ProtectHome=yes replaces /home with an empty directory, so
+# the pass fails with "No ED25519 host key is known" while strict checking is
+# doing exactly its job against a known_hosts it cannot see. BindReadOnlyPaths
+# does not rescue it, measured on 2026-08-18: the bind source is already masked
+# by the time the bind applies. read-only still denies every write to /home,
+# which is the half that matters here.
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/whichports-controlplane

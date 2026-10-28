@@ -1,0 +1,26 @@
+# Every ten minutes. The owner decided on 2026-08-21 that the joined port set is
+# probed every 5 to 15 minutes and left the exact number open. Ten is the
+# reasoning in docs/RECORD.md 4.78, in one line: it halves what a customer sees
+# in their log against five minutes, and costs five minutes of worst case
+# latency on a fifteen minute agent cycle.
+#
+# **This lane probes on every tick, whether or not anything moved.** The lane
+# it replaces only probed hosts whose plan had changed, which measured nothing
+# when a rule changed somewhere we cannot see. The outside view moves without
+# the document moving, and that is the whole reason there is an outside view.
+#
+# The agent reports every fifteen minutes, so worst case is fifteen minutes to
+# notice plus ten to act, against seventy five before any of this existed.
+#
+# Persistent, so a box that was off takes one pass on the way up.
+[Unit]
+Description=Schedule a whichports pass over the joined port set
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

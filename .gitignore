@@ -1,0 +1,19 @@
+# Settings and secrets of a running instance
+.env
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Local databases
+*.db
+*.db-wal
+*.db-shm
+
+# Build output
+agent/dist/
+agent/dist-repo/
+site/app/dist/
+selfhost/e2e/build/

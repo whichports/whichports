@@ -1,0 +1,15 @@
+# Installed by ops/cve/install-on-the-box.sh.
+#
+# Daily and off the hour, in UTC whatever the box's own clock is set to. Not
+# on the five-minute sweep: a build takes most of a minute and half a
+# gigabyte.
+[Unit]
+Description=Schedule the whichports CVE extracts
+
+[Timer]
+OnCalendar=*-*-* 04:41:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

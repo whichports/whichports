@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<zone>
+  <short>Home</short>
+  <service name="ssh"/>
+  <service name="mdns"/>
+  <source address="192.0.2.0/24"/>
+  <masquerade/>
+  <forward-port port="8443" protocol="tcp" to-port="443" to-addr="192.0.2.9"/>
+</zone>

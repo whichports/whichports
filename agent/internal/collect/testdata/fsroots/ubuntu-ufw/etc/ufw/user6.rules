@@ -1,0 +1,15 @@
+*filter
+:ufw6-user-input - [0:0]
+### RULES ###
+
+### tuple ### limit tcp 22 ::/0 any ::/0 in
+-A ufw6-user-input -p tcp --dport 22 -j ufw6-user-limit-accept
+
+### tuple ### allow tcp 80 ::/0 any ::/0 in
+-A ufw6-user-input -p tcp --dport 80 -j ACCEPT
+
+### tuple ### allow tcp 443 ::/0 any ::/0 in
+-A ufw6-user-input -p tcp --dport 443 -j ACCEPT
+
+### END RULES ###
+COMMIT

@@ -1,0 +1,242 @@
+# The prober API end to end, on one machine. Driven by selfhost/e2e/run.py,
+# which is the thing to read first. Nothing here is what a tester installs.
+#
+#   instance (+ its Caddy)   a self-hosted control plane with ApiTransport set
+#   instance-scheduler       its worker, the product's scheduler, for one step
+#   ours (+ its Caddy)       a second control plane playing our side: the API
+#   ours-worker              our side's prober API worker, holding the ssh key
+#   vantage                  a prober box: sshd and the six runner modules
+#   target-a, target-b       two servers somebody watches, each with the agent
+#
+# **Two things differ from the product, both forced by the test and neither
+# touching production code.**
+#
+# The network. SI-6 proves only globally routable addresses
+# (controlplane/app/authz.py, normalise_target), so every container sits on
+# an internal Docker network, which nothing leaves, numbered from two ranges
+# that rule accepts unchanged and that are routed to nobody:
+# 192.88.99.0/24, the deprecated 6to4 relay anycast prefix (RFC 7526), and
+# 2001:20:0:1::/64, inside ORCHIDv2 (RFC 7343), whose addresses are not
+# routable at the IP layer.
+#
+# The namespace. The product puts the control plane and Caddy on the
+# machine's own network. Two control planes cannot share one machine's
+# loopback, so here each Caddy joins its control plane's namespace instead.
+# The ingest still sees Caddy on 127.0.0.1, which is what the proof rule
+# checks. That arrangement does not survive a restart of the control plane
+# (docs/record 4.226), which a test that restarts neither can live with.
+#
+# TLS is Caddy's own local authority, one per Caddy, because ApiTransport and
+# the agent refuse plain http. `.internal` is a name Caddy issues for by
+# itself. The two roots reach Python and the Go agent through SSL_CERT_FILE,
+# which is set in this file and nowhere a tester's instance reads
+# (selfhost/test_static.py).
+
+name: whichports-e2e
+
+x-python: &python
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+x-caddy: &caddy
+  image: whichports-caddy:local
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  cap_add:
+    - NET_BIND_SERVICE
+
+x-target: &target
+  # Built by target-a alone and run by both. A build in each built the one
+  # image twice at once, which the image store can refuse with "already
+  # exists" (selfhost/compose.yaml says when it did).
+  image: whichports-e2e-target:local
+  environment:
+    SSL_CERT_FILE: /e2e/roots/roots.pem
+  # Root in the container, to do what the install command does with sudo:
+  # enrol, then start the agent as its own user with its two capabilities.
+  # The agent itself ends up with NET_ADMIN and NET_RAW and nothing else
+  # (run.py prints its capability sets).
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - SETUID
+    - SETGID
+    - SETPCAP
+    - NET_ADMIN
+    - NET_RAW
+    - NET_BIND_SERVICE
+
+services:
+  ours:
+    <<: *python
+    image: whichports-controlplane:local
+    command: ["python", "selfhost/worker.py", "exec", "whichports-ingest.service"]
+    environment:
+      WHICHPORTS_BASE_URL: https://ours.internal
+    volumes:
+      - ours_data:/var/lib/whichports-controlplane
+    networks:
+      internet:
+        ipv4_address: 192.88.99.20
+        ipv6_address: 2001:20:0:1::20
+        aliases:
+          - ours.internal
+
+  ours-caddy:
+    <<: *caddy
+    network_mode: service:ours
+    environment:
+      WHICHPORTS_DOMAIN: ours.internal
+    volumes:
+      - ours_caddy:/data
+      - ours_caddy_config:/config
+
+  ours-worker:
+    <<: *python
+    image: whichports-e2e-ours:local
+    build:
+      context: ../..
+      dockerfile: selfhost/e2e/Dockerfile
+      target: ours
+    command: ["python", "selfhost/worker.py", "exec", "whichports-proberapi.service"]
+    volumes:
+      - ours_data:/var/lib/whichports-controlplane
+      - ours_ssh:/e2e/home/.ssh
+    networks:
+      internet:
+        ipv4_address: 192.88.99.21
+        ipv6_address: 2001:20:0:1::21
+
+  vantage:
+    image: whichports-e2e-vantage:local
+    build:
+      context: ../..
+      dockerfile: selfhost/e2e/Dockerfile
+      target: vantage
+    networks:
+      internet:
+        ipv4_address: 192.88.99.30
+        ipv6_address: 2001:20:0:1::30
+
+  instance:
+    <<: *python
+    image: whichports-controlplane:local
+    command: ["python", "selfhost/worker.py", "exec", "whichports-ingest.service"]
+    env_file: instance.env
+    environment:
+      WHICHPORTS_BASE_URL: https://instance.internal
+      SSL_CERT_FILE: /e2e/roots/roots.pem
+    volumes:
+      - instance_data:/var/lib/whichports-controlplane
+      - roots:/e2e/roots:ro
+    networks:
+      internet:
+        ipv4_address: 192.88.99.10
+        ipv6_address: 2001:20:0:1::10
+        aliases:
+          - instance.internal
+
+  instance-caddy:
+    <<: *caddy
+    network_mode: service:instance
+    environment:
+      WHICHPORTS_DOMAIN: instance.internal
+    volumes:
+      - instance_caddy:/data
+      - instance_caddy_config:/config
+
+  # Where the driver runs the instance's passes, with the command the probe
+  # units carry (`worker.py once`). Idle otherwise: the scheduler is not
+  # started here, because a pass firing on its own timer in the middle of a
+  # step would take the instance's one batch slot from the step being shown.
+  instance-worker:
+    <<: *python
+    image: whichports-controlplane:local
+    command: ["sleep", "infinity"]
+    env_file: instance.env
+    environment:
+      WHICHPORTS_BASE_URL: https://instance.internal
+      SSL_CERT_FILE: /e2e/roots/roots.pem
+    volumes:
+      - instance_data:/var/lib/whichports-controlplane
+      - roots:/e2e/roots:ro
+    networks:
+      internet:
+        ipv4_address: 192.88.99.11
+        ipv6_address: 2001:20:0:1::11
+
+  # The product's scheduler itself, `worker.py run`, as the worker container
+  # of a real instance runs it. Up only for the step that shows it taking
+  # our prober list unasked, and removed before its first sweep and pass.
+  instance-scheduler:
+    <<: *python
+    image: whichports-controlplane:local
+    command: ["python", "selfhost/worker.py", "run"]
+    env_file: instance.env
+    environment:
+      WHICHPORTS_BASE_URL: https://instance.internal
+      SSL_CERT_FILE: /e2e/roots/roots.pem
+    volumes:
+      - instance_data:/var/lib/whichports-controlplane
+      - roots:/e2e/roots:ro
+    networks:
+      internet:
+        ipv4_address: 192.88.99.12
+        ipv6_address: 2001:20:0:1::12
+
+  target-a:
+    <<: *target
+    build:
+      context: ../..
+      dockerfile: selfhost/e2e/Dockerfile
+      target: target
+    hostname: target-a
+    volumes:
+      # The one writer of the two roots. Every other container reads them.
+      - roots:/e2e/roots
+    networks:
+      internet:
+        ipv4_address: 192.88.99.40
+        ipv6_address: 2001:20:0:1::40
+
+  target-b:
+    <<: *target
+    # target-a's image, which no registry has.
+    pull_policy: never
+    hostname: target-b
+    volumes:
+      - roots:/e2e/roots:ro
+    networks:
+      internet:
+        ipv4_address: 192.88.99.50
+        ipv6_address: 2001:20:0:1::50
+
+networks:
+  internet:
+    internal: true
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: 192.88.99.0/24
+        - subnet: 2001:20:0:1::/64
+
+volumes:
+  ours_data:
+  ours_caddy:
+  ours_caddy_config:
+  ours_ssh:
+  instance_data:
+  instance_caddy:
+  instance_caddy_config:
+  roots:

@@ -1,0 +1,134 @@
+# The optional front door of a self-hosted whichports. It takes the shape of
+# the app.whichports.com block on our own box (ops/caddyfile.reference), with
+# two differences, both said below where they happen.
+#
+# Caddy and the control plane both use this machine's own network
+# (compose.yaml, network_mode: host), so Caddy reaches the ingest on
+# 127.0.0.1:8410, exactly as on the box. That is load-bearing: the ingest
+# believes the address an agent's report arrived from only when the connection
+# that carried it came from loopback (controlplane/app/ingest.py,
+# observed_source_address), and that address is how a server proves it holds
+# its own address.
+#
+# WHICHPORTS_DOMAIN is the name your dashboard and your agents use. With a
+# public name whose records point here and port 443 open, Caddy gets a
+# certificate by itself, from Let's Encrypt, on 443 alone (the global options
+# below say how). `localhost` gets one from Caddy's own local authority, which
+# is what selfhost/smoke.py uses.
+{
+	# A client that sends no server name gets this site's certificate rather
+	# than a TLS alert. Our probers read certificates by address, with no
+	# name, so without this line your own dashboard's certificate is never
+	# read (docs/RECORD.md 4.161).
+	default_sni {$WHICHPORTS_DOMAIN}
+
+	# Where Caddy listens on this machine: 443. The authority's check of the
+	# certificate "is performed via TLS on port 443"
+	# (letsencrypt.org/docs/challenge-types, read 2026-10-20), so selfhost/.env
+	# moves it only where something forwards port 443 to it as it is.
+	https_port {$WHICHPORTS_HTTPS_PORT:443}
+
+	# 443 alone, and nothing on 80, since 16 October 2026 (the shorter
+	# install, docs/record 4.461). Caddy's page on automatic HTTPS, read
+	# 2026-10-16 (caddyserver.com/docs/automatic-https): the HTTP challenge
+	# "requires port 80 to be externally accessible", the TLS-ALPN challenge
+	# "requires port 443 to be externally accessible", both are enabled by
+	# default, and Caddy "chooses one at random". With 80 closed the HTTP
+	# challenge can only fail, so it is off and the first certificate is
+	# asked for with the TLS-ALPN one at once. The redirect from http:// to
+	# https:// "uses HTTP port 80", so it is off too, and an address typed
+	# with http:// gets no answer.
+	#
+	# Naming the issuer replaces Caddy's default list of issuers. In the
+	# pinned 2.11.4 that list is Let's Encrypt alone unless an email is set
+	# (DefaultIssuers in modules/caddytls/automation.go at v2.11.4, read
+	# 2026-10-16), and this file sets none, so the authority is the one it
+	# was before: `acme` with its default directory is Let's Encrypt. A name
+	# like `localhost` still gets its certificate from Caddy's own local
+	# authority. Both measured on 2026-10-16 with this file in the pinned
+	# image and no network, so no authority was asked: it bound 443 and
+	# nothing on 80, `localhost` was issued by the local authority, and a
+	# public name was tried with Let's Encrypt and no other issuer.
+	auto_https disable_redirects
+	cert_issuer acme {
+		disable_http_challenge
+	}
+
+	# HTTP/1.1 and HTTP/2 only, both over TCP. HTTP/3 would open a UDP
+	# socket as well, and this stack opens the one TCP port above and
+	# nothing else, which selfhost/smoke.py holds it to.
+	servers {
+		protocols h1 h2
+	}
+
+	# Caddy's admin API listens on 127.0.0.1:2019 by default, and here that
+	# loopback is this machine's own, so any program on it could rewrite this
+	# configuration. Nothing needs it: a change to this file takes effect
+	# when the container restarts.
+	admin off
+
+	# With `localhost` Caddy makes its own certificate authority and tries to
+	# add it to the container's trust store, which is read-only. Nothing in
+	# the container needs to trust it.
+	skip_install_trust
+}
+
+{$WHICHPORTS_DOMAIN} {
+	# The app reads no such header any more, and a browser can type it.
+	request_header -X-Admin-Gate
+
+	encode gzip
+
+	# The path agents post to. The body cap is the hard backstop behind the
+	# ingest's own size checks.
+	@ingest path /api/v1/*
+	handle @ingest {
+		request_body {
+			max_size 8MB
+		}
+		reverse_proxy 127.0.0.1:{$WHICHPORTS_INGEST_PORT:8410}
+	}
+
+	# Difference one. On our box /metrics sits behind basic auth, whose hash
+	# lives only on that box. Here it is not served from outside at all,
+	# because it counts every server in the instance and the ingest itself asks
+	# for no credential. Read it from inside:
+	#   docker compose exec controlplane python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8410/metrics').read().decode())"
+	@metrics path /metrics
+	handle @metrics {
+		respond 404
+	}
+
+	# The files the rendered pages reference by path.
+	@assets path /fonts/* /favicon.svg /favicon-32.png /favicon.ico /apple-touch-icon.png /robots.txt
+	handle @assets {
+		root * /srv/whichports/app
+		# A year, and only for a font that was served. Without the condition
+		# the header went out on every answer under /fonts/, so a font that
+		# was missing for one request answered 404 with the same year, and a
+		# browser may keep that as long (measured on our own Caddy with this
+		# line, docs/record 4.193). Caddy's page for `header`: with `match`,
+		# "Header operations are applied only to responses that satisfy the
+		# specified conditions" (read 2026-10-06). 304 is named beside 2xx so
+		# that a font asked for again with its Etag keeps its year.
+		header /fonts/* {
+			Cache-Control "public, max-age=31536000, immutable"
+			match status 2xx 304
+		}
+		file_server
+	}
+
+	# Difference two. Our box keeps a second route for the superseded Reflex
+	# app on port 8000. Nothing here runs it.
+
+	# Everything else is the dashboard, rendered per request by the ingest.
+	handle {
+		reverse_proxy 127.0.0.1:{$WHICHPORTS_INGEST_PORT:8410}
+		header {
+			X-Frame-Options DENY
+			X-Content-Type-Options nosniff
+			Referrer-Policy no-referrer
+			-Server
+		}
+	}
+}

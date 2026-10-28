@@ -1,0 +1,28 @@
+# The dead-man sweep. Reads when each host last reported, opens one alert per
+# host that went quiet, resolves the ones that came back, and delivers what it
+# raised. A silent agent is itself an alert (docs/PRODUCT.md 4c), because a
+# monitoring tool that dies quietly reads as healthy.
+#
+# Delivery is off until the environment file below exists and names a
+# recipient. Without it the sweep still records everything and simply mails
+# nobody, which is deliberate: nothing starts sending because a branch merged.
+[Unit]
+Description=whichports dead-man sweep
+After=network.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/srv/controlplane
+Environment=WHICHPORTS_DB=/var/lib/whichports-controlplane/whichports.db
+# Holds the relay credential and the webhook URL, so it lives on the box at
+# 0600 and never in the repository. A webhook URL routinely carries its own
+# secret in its path, which is the same reason. Missing is fine and means
+# "do not send", on either channel.
+EnvironmentFile=-/etc/whichports/alerts.env
+ExecStart=/srv/controlplane/.venv/bin/python -m app.sweep_cli
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/whichports-controlplane

@@ -1,0 +1,3 @@
+<?xml version="1.0"?>
+<!DOCTYPE zone [<!ENTITY bomb "boom">]>
+<zone><service name="&bomb;"/></zone>

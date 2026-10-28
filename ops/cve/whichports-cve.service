@@ -1,0 +1,33 @@
+# Installed by ops/cve/install-on-the-box.sh.
+#
+# The security data the CVE check holds a server's packages against, built
+# once a day from the two vendors' own files: Debian's security tracker and
+# Canonical's OSV file. It asks those two hosts and no other
+# (controlplane/app/cvefetch.py), and no request says anything about a
+# server or a package. A build that fails leaves the files of the day before
+# in place and fails the unit, so `systemctl status whichports-cve` is the
+# honest answer to "is the data fresh".
+[Unit]
+Description=whichports CVE extracts, built from the vendors' own files
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/srv/controlplane
+ExecStart=/srv/controlplane/.venv/bin/python -m app.cvesync_cli build \
+    --out /var/lib/whichports-cve
+# A download that hangs does not hold the unit for ever.
+TimeoutStartSec=900
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+# Every strict unit carries this line: whichports-ingest.service has the
+# measurement (docs/RECORD.md 4.183).
+PrivateTmp=yes
+ReadWritePaths=/var/lib/whichports-cve
+# A build took 492 MB at its peak when it was measured (ops/RUNBOOK.md). The
+# cap is there so a vendor's file that grew cannot take the ingest's memory
+# with it.
+MemoryMax=1G

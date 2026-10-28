@@ -1,0 +1,23 @@
+# What fires the on-demand scan responder. The ingest writes the trigger file
+# whenever an accepted "Scan now" lands (app/scan.py), and this watches it.
+#
+# A burst of scans coalesces. A path unit does not re-run a service that is
+# still active, so several requests that arrive while a drain is already running
+# are all covered by that one drain, which reads every pending request from the
+# table rather than one.
+#
+# Without these two units installed the feature is slower, not broken: an
+# accepted request sits in the table and the next fast-lane pass covers it
+# within about ten minutes (whichports-probe-fast.timer). The trigger is the
+# fast path, never the only path, so the feature is honest either way.
+[Unit]
+Description=whichports, watch for an on-demand scan request
+
+[Path]
+# PathModified rather than PathChanged, so it fires on the write itself and not
+# only on close. The ingest truncates and rewrites this file, which is a
+# modification whether or not the bytes changed.
+PathModified=/var/lib/whichports-controlplane/scan-requested
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+# What the build may see, and nothing else. Everything is excluded first and
+# only what the images need is let back in, so a file somebody leaves in the
+# checkout, an .env, a database, a screenshot or a note, can never end up in
+# an image. BuildKit reads this file because it sits beside the Dockerfile and
+# shares its name.
+*
+
+# The control plane, exactly what ops/deploy-controlplane.sh ships.
+!controlplane/app/*.py
+!controlplane/ops/whichports-*
+!controlplane/pyproject.toml
+!controlplane/uv.lock
+
+# The CVE check's daily build, its two unit files and nothing else of ops/cve.
+!ops/cve/whichports-cve.service
+!ops/cve/whichports-cve.timer
+
+# The dashboard renderer and its modules, without their tests.
+!site/theme.py
+!site/app/*.py
+!site/app/*.js
+site/app/test_*.py
+site/app/bench_*.py
+
+# The fonts the dashboard's assets are made from. site/app/dist is build
+# output, absent from a clean checkout, and never read.
+!site/fonts/*.woff2
+!site/fonts/OFL.txt
+
+# This directory's own runtime files.
+!selfhost/worker.py
+!selfhost/restore.py
+!selfhost/Caddyfile

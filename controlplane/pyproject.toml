@@ -1,0 +1,37 @@
+# The control plane: the ingest service agents post to, and the storage the
+# dashboard reads. Dependency posture: FastAPI and
+# uvicorn are the two runtime dependencies, the same pair an earlier project
+# of the author's ran in production, and the database is stdlib sqlite3.
+# Justifications live in the
+# PR that adds each.
+[project]
+name = "whichports-controlplane"
+version = "0.1.0"
+description = "whichports control plane: ingest and storage"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "reflex>=0.9.8",
+    # The QR code on the authenticator-app window. Pure Python, no
+    # dependencies of its own, BSD, and it does one thing: turn a string into
+    # QR modules. The alternative was writing the encoder here, which is
+    # Reed-Solomon over GF(256) plus masking and format bits, and a QR of our
+    # own that scans on four phones out of five is worse than none. An earlier
+    # project of the author's shipped the same library for the same screen.
+    # `app/totp_qr.py` imports it
+    # lazily, so a box where the install has not run yet loses the picture and
+    # keeps the key.
+    "segno>=1.6.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "httpx2",
+]
+
+[tool.pytest.ini_options]
+# Tests import the app package from the repo checkout, no install step.
+pythonpath = ["."]
+testpaths = ["tests"]

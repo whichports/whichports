@@ -1,0 +1,51 @@
+# The prober API's worker. Self-hosted instances queue batches through the
+# ingest's /api/v1/prober/ routes, and this drives probe1 and probe2 for them
+# (app/proberapi_worker.py).
+#
+# It runs as deploy with an ssh channel to the vantage hosts, the same as the
+# probe units and the scan responder, because probing happens there and never
+# here (app/dispatch.py, the direction of trust). The ingest, which the
+# internet can reach, has no ssh access and never gets one. It only checks,
+# charges and queues, and this unit, which nothing outside the box can reach,
+# builds the snapshot from our registry and sends the batch.
+#
+# Every batch runs under probe.lock, the lock the probe timers and the scan
+# responder hold, so a target never has two of our runners against it,
+# whichever instance or timer asked (docs/PRODUCT.md 5d).
+#
+# Long running rather than a timer, because an instance is waiting for each
+# answer and polls for it every second. Idle, it reads one row of an empty
+# table once a second and takes no lock.
+#
+# `systemctl restart` sends SIGTERM, and the worker lets the batch it is
+# running finish before it stops. An ordinary batch is seconds. The slowest
+# the API's limits allow is 16 addresses by 200 ports that all stay silent,
+# 3,200 connects at about 12.8 a second (64 slots over a 5 second timeout,
+# app/prober.py "The bounds"), about four minutes, so the stop timeout is
+# five rather than systemd's default of ninety seconds.
+# ops/deploy-controlplane.sh restarts it after a deploy when it is running.
+[Unit]
+Description=whichports, drive the probers for self-hosted instances
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/srv/controlplane
+Environment=WHICHPORTS_DB=/var/lib/whichports-controlplane/whichports.db
+ExecStart=/srv/controlplane/.venv/bin/python -m app.proberapi_worker
+Restart=always
+RestartSec=5
+TimeoutStopSec=300
+NoNewPrivileges=yes
+ProtectSystem=strict
+# read-only rather than yes, for the reason whichports-scan.service gives: ssh
+# keeps the key, the config and known_hosts under /home, and ProtectHome=yes
+# replaces /home with an empty directory.
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/whichports-controlplane
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+# One verified snapshot of the control plane's database. The script takes a
+# consistent copy through SQLite, opens it, checks it, and fails the unit if
+# the copy does not survive that check, so `systemctl status` is the honest
+# answer to "are the backups good".
+[Unit]
+Description=whichports control plane backup
+After=network.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/srv/controlplane
+ExecStart=/srv/controlplane/.venv/bin/python -m app.backup \
+    --db /var/lib/whichports-controlplane/whichports.db \
+    --dest /var/backups/whichports --keep 14
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+# strict leaves /tmp read-only and SQLite needs it the moment a sort or a
+# check no longer fits its page cache: whichports-ingest.service has the
+# measurement (docs/RECORD.md 4.183). Every strict unit carries this line.
+PrivateTmp=yes
+ReadWritePaths=/var/backups/whichports /var/lib/whichports-controlplane

@@ -1,0 +1,162 @@
+# A self-hosted whichports. From the repository root:
+#
+#   cp selfhost/env.example selfhost/.env       then fill it in
+#   docker compose -f selfhost/compose.yaml up -d --build
+#
+# selfhost/README.md is the install, upgrade, backup and restore guide.
+#
+# Three services. `controlplane` is the ingest, the API your agents post to and
+# the dashboard. `worker` runs the jobs systemd timers run on our own box, at
+# the same cadences, read from the same unit files (selfhost/worker.py).
+# `caddy` is the front door with the certificate, and it is optional: it
+# starts because selfhost/.env names its profile, and with that line removed
+# your own reverse proxy takes its place (README, "Your own proxy").
+#
+# **The control plane and Caddy use this machine's own network**, the shape of
+# our own box: the ingest listens on 127.0.0.1:8410 and Caddy on 443.
+# Three reasons, each measured or read on 2026-10-01 (docs/record):
+#
+#   - The ingest believes the address an agent's report arrived from only when
+#     the connection carrying it came from loopback
+#     (controlplane/app/ingest.py, observed_source_address), and that address
+#     is how a server proves it holds its own address. A proxy in another
+#     container is not loopback.
+#   - The alternative, Caddy joined to the control plane's network namespace,
+#     broke on the first restart: a joined container stays attached to the
+#     namespace that is gone. A third container holding the namespace survives
+#     crashes, and still depends on Docker starting it first after a reboot,
+#     which Docker Engine does only from 29.0.0.
+#   - Nothing is published through Docker, so no port goes past this
+#     machine's own firewall rules.
+#
+# Rules this file keeps, and selfhost/test_static.py checks:
+#   - No container gets the Docker socket, ever. Anything holding it is root
+#     on this machine, the reason the agent never joins the docker group
+#     (docs/RECORD.md 4.222).
+#   - No port is published, and the ingest's bind stays 127.0.0.1.
+#   - Every container is read-only with a private /tmp, runs as an
+#     unprivileged user and holds no capability, but for the one Caddy needs
+#     to bind 443. The two Python containers cannot gain privileges.
+#     These stand in for the sandbox lines of the unit files.
+
+name: whichports
+
+x-controlplane: &controlplane
+  # One image for the control plane and the worker, built by the controlplane
+  # service alone. With the build in this shared block, `up --build` built it
+  # twice at once, and the image store refused the second to finish: "image
+  # whichports-controlplane:local already exists", nothing started (Compose
+  # 2.40.3 on a new Ubuntu 26.04, 2026-10-26).
+  image: whichports-controlplane:local
+  env_file: .env
+  environment:
+    # The address every link and the install command name
+    # (controlplane/app/publicurl.py), from the one name you set.
+    WHICHPORTS_BASE_URL: https://${WHICHPORTS_DOMAIN:?set WHICHPORTS_DOMAIN in selfhost/.env}
+    # Where the CVE check's data is read from: the folder the worker's daily
+    # build writes, the same path as on our box (ops/cve/whichports-cve.service).
+    WHICHPORTS_CVE_DIR: /var/lib/whichports-cve
+  init: true
+  read_only: true
+  # PrivateTmp= on the box. SQLite needs a writable /tmp once a sort outgrows
+  # its page cache (docs/RECORD.md 4.183).
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+
+services:
+  controlplane:
+    <<: *controlplane
+    build:
+      context: ..
+      dockerfile: selfhost/Dockerfile
+      target: controlplane
+      args:
+        WHICHPORTS_COMMIT: ${WHICHPORTS_COMMIT:-}
+    command: ["/srv/controlplane/.venv/bin/python", "selfhost/worker.py", "exec", "whichports-ingest.service"]
+    network_mode: host
+    volumes:
+      - data:/var/lib/whichports-controlplane
+      # Read only here: the worker's build is the one thing that writes it.
+      - cve:/var/lib/whichports-cve:ro
+    healthcheck:
+      test: ["CMD", "/srv/controlplane/.venv/bin/python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:${WHICHPORTS_INGEST_PORT:-8410}/healthz', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+  worker:
+    <<: *controlplane
+    # The image the controlplane service builds. No registry has it, so it
+    # is never pulled: without this line a first `up --build` asked Docker
+    # Hub for it, and printed an error, before the build had made it.
+    pull_policy: never
+    command: ["/srv/controlplane/.venv/bin/python", "selfhost/worker.py", "run"]
+    volumes:
+      - data:/var/lib/whichports-controlplane
+      - backups:/var/backups/whichports
+      - cve:/var/lib/whichports-cve
+    # A probing pass that is cut off stores nothing and the next one runs as
+    # usual, so this only needs to be long enough for a sweep to finish.
+    stop_grace_period: 30s
+    depends_on:
+      controlplane:
+        condition: service_started
+
+  caddy:
+    profiles: ["caddy"]
+    image: whichports-caddy:local
+    build:
+      context: ..
+      dockerfile: selfhost/Dockerfile
+      target: caddy
+    network_mode: host
+    environment:
+      WHICHPORTS_DOMAIN: ${WHICHPORTS_DOMAIN:?set WHICHPORTS_DOMAIN in selfhost/.env}
+      WHICHPORTS_HTTPS_PORT: ${WHICHPORTS_HTTPS_PORT:-443}
+      WHICHPORTS_INGEST_PORT: ${WHICHPORTS_INGEST_PORT:-8410}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    # Up only while Caddy holds its port. Without a check, compose up --wait
+    # read a Caddy that exited at once and restarted as up (Compose 5.6.0,
+    # 2026-10-20). busybox's nc is in the pinned image, and connecting needs
+    # no capability.
+    healthcheck:
+      test: ["CMD", "nc", "-z", "-w", "3", "127.0.0.1", "${WHICHPORTS_HTTPS_PORT:-443}"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    # The one capability in the stack: binding 443. Caddy runs as an
+    # unprivileged user and gets it from the file capability on its binary,
+    # which the kernel ignores under no-new-privileges. So that flag is the
+    # one hardening line this service does not carry, and the image holds no
+    # setuid file instead (selfhost/Dockerfile says it in full).
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    restart: unless-stopped
+
+volumes:
+  # The database, the probe lock and the scan trigger. The one thing worth
+  # backing up.
+  data:
+  # Fourteen nightly snapshots of it, written by the worker.
+  backups:
+  # The CVE check's data, four small files built each day from the vendors'
+  # own files by the worker. Not backed up: the next build makes it again.
+  cve:
+  # Caddy's certificates and its account key.
+  caddy_data:
+  caddy_config:

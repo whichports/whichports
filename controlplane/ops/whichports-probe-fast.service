@@ -1,0 +1,32 @@
+# The fast lane. Every host, and the joined port set rather than the document's
+# ports alone: every port with a listener, every port with a declaration
+# against it, and every port the newest stored run measured.
+#
+# This is the answer to "I just edited a rule, did it work", which the hourly
+# pass answers far too slowly (docs/CONTEXT.md 5: the pitch leads with
+# debugging). It is not a paid tier, every account gets it.
+#
+# The same registry and the same key as whichports-probe.service. It is a
+# separate unit only so the two schedules can differ.
+#
+# It replaces whichports-probe-changed.service, which is retired. ops/RUNBOOK.md
+# has the three commands that take the old one off a box, and they are not
+# optional: a timer left enabled keeps running a unit this repository no longer
+# ships.
+[Unit]
+Description=whichports, probe the joined port set
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/srv/controlplane
+Environment=WHICHPORTS_DB=/var/lib/whichports-controlplane/whichports.db
+ExecStart=/srv/controlplane/.venv/bin/python -m app.prober_cli probe --joined --registry --tls-known
+NoNewPrivileges=yes
+# read-only rather than yes, for the reason whichports-probe.service spells out.
+ProtectHome=read-only
+ProtectSystem=strict
+PrivateTmp=yes
+ReadWritePaths=/var/lib/whichports-controlplane

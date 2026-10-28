@@ -1,0 +1,14 @@
+# Schedules the local collection. Fifteen minutes keeps the document fresh
+# enough to be useful and cheap enough to be invisible; the randomized delay
+# keeps a fleet from collecting in lockstep. Not enabled by default: the
+# operator decides with `systemctl enable --now whichports-agent.timer`.
+[Unit]
+Description=Schedule whichports host collection
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=2m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

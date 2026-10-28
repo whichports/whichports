@@ -1,0 +1,99 @@
+# The ingest: the one endpoint agents post host documents to. Runs as the
+# unprivileged deploy user and binds loopback only. Caddy is the front door
+# and holds the TLS. The database lives in /var/lib/whichports-controlplane.
+#
+# This file was byte for byte what /etc/systemd/system/whichports-ingest.service
+# held on the production box on 2026-08-15, apart from its own note and one
+# semicolon rewritten to a full stop. It is committed because it was the only
+# unit the box runs that the repository did not carry, so the rebuild list in
+# ops/RUNBOOK.md restored everything except the service agents post to.
+#
+# **It differs from the box as of 2026-08-16: --no-proxy-headers is new and has
+# to be installed before the ingest can record a proof of control.** The bind
+# was confirmed unchanged the same day with `ss -tlnp`: 127.0.0.1:8410, and the
+# only sockets reachable from off the box are sshd on 22 and Caddy on 80 and
+# 443. Install it the way ops/deploy-controlplane.sh prints, then
+# `systemctl daemon-reload && systemctl restart whichports-ingest`.
+#
+# **Why the flag is load-bearing rather than tidying.** uvicorn installs its
+# ProxyHeadersMiddleware by default (uvicorn 0.52.2, config.py
+# `proxy_headers: bool = True`, trusted hosts defaulting to 127.0.0.1). That
+# middleware overwrites the request's client address with one it reads out of
+# X-Forwarded-For. app/ingest.py decides whether to believe a forwarded address
+# by checking that the connection itself came from loopback, and it cannot
+# check that if the value has already been replaced by the header it is
+# deciding about. With the flag, the client address is the socket peer and the
+# check means what it says. Without it the ingest fails closed and logs a
+# warning naming this file, so a missed install is visible in the journal
+# rather than silent, but no address on the fleet is ever authorised.
+#
+# Nothing else in the control plane reads the request's client address, and the
+# secure-cookie decision in app/web_auth.py reads the X-Forwarded-Proto header
+# itself rather than the rewritten scheme, so the flag costs nothing elsewhere.
+#
+# **It differs from the box as of 2026-10-16: --no-access-log is new**, so a
+# link's token stops reaching the journal. Install it the same way, then
+# `systemctl daemon-reload && systemctl restart whichports-ingest`.
+#
+# **This process serves the dashboard as well**, one page per workspace,
+# rendered from the database on every request (app/dashboard.py). The renderer
+# imports the site tree the deploy leaves at /srv/controlplane/site and reads
+# /srv/controlplane/DEPLOYED_COMMIT for the footer. ProtectSystem=strict makes
+# the filesystem read-only rather than invisible, so both reads work and
+# nothing needed widening. WHICHPORTS_APP_ROOT is gone with the render timer:
+# nothing reads the written pages any more.
+[Unit]
+Description=whichports control plane ingest
+After=network.target
+
+[Service]
+User=deploy
+WorkingDirectory=/srv/controlplane
+Environment=WHICHPORTS_DB=/var/lib/whichports-controlplane/whichports.db
+# Where the provider sign-in credentials live, and anything else this process
+# needs that does not belong in a unit file. `Environment=` above is readable
+# by `systemctl show`, which is right for two paths and wrong for a client
+# secret.
+#
+# **The leading `-` means the file is optional**, the same as the sweep unit's
+# alerts.env. A box with no providers configured starts exactly as it did
+# before, and a missing file means "no provider sign-in" rather than a service
+# that refuses to start.
+#
+# This line was missing until 2026-08-23, and its absence had no symptom worth
+# noticing: the credentials were in the file, the file was read by nothing, and
+# the login page just showed no buttons. `python -m app.users_cli providers`
+# exists so that question has an answer next time.
+EnvironmentFile=-/etc/whichports/controlplane.env
+# --no-access-log: uvicorn writes every request line to stdout unless told
+# not to, the path and query string included, and stdout is the journal.
+# A link a mail carries is a path with its token in it, /reset/<token> and
+# three like it, and a sign-in callback carries its code in the query string.
+# uvicorn's settings page, read 2026-10-16: "--no-access-log - Disable access
+# log only, without changing log level." The application's own lines
+# (app/journal.py) still reach the journal. tests/test_access_log.py runs this
+# line and reads what it writes.
+ExecStart=/srv/controlplane/.venv/bin/uvicorn app.ingest:app --host 127.0.0.1 --port 8410 --no-proxy-headers --no-access-log
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+# **Load-bearing, not tidying.** ProtectSystem=strict mounts every directory
+# read-only, /tmp and /var/tmp included, and systemd.exec says the one way
+# back: "if ProtectSystem= is set to strict and PrivateTmp= is enabled, then
+# /tmp/ and /var/tmp/ will be writable." SQLite sorts an ORDER BY it has no
+# index for through a transient index that spills to a temporary file once
+# the page cache (2000 KiB) is full, and the join engine reads every probe
+# result a host ever had in measured_at order. From 2026-08-29, when the
+# first host passed roughly 15k rows, every dashboard render failed that
+# sort with "disk I/O error" and every server read "not probed yet" until
+# 2026-09-15 (docs/RECORD.md 4.183). Measured inside this unit's own
+# sandbox that day: without this line the three real hosts fail, with it
+# they join. The sweep, the probes and the scan unit have carried this line
+# all along, which is why alerts never stopped. tests/test_unit_sandboxes.py
+# holds every strict unit to it.
+PrivateTmp=yes
+ReadWritePaths=/var/lib/whichports-controlplane
+
+[Install]
+WantedBy=multi-user.target

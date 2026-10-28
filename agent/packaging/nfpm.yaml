@@ -1,0 +1,96 @@
+# nfpm config: ONE .deb and ONE .rpm from a single spec, no dpkg-buildpackage
+# or rpmbuild toolchains. nfpm is a single Go binary, which matches the
+# agent's own posture. The pattern is the packaging of an earlier project of
+# the author's, reviewed and rewritten, not pasted.
+#
+# Build:   make package          (unsigned, development)
+#          make package-signed   (release; key handling in signing/README.md)
+# Version: the latest v* git tag with the leading v stripped, else 0.0.0-dev.
+#          The Makefile passes it in as $PKG_VERSION.
+#
+# The binary itself has no dependencies: it is one static executable, which
+# is the point of it. The one declared dependency per family below is for the
+# post-install script, which creates the whichports-agent system user with
+# groupadd and useradd. Both packages are effectively always present, so this
+# changes nothing on a real host and is declared because maintainer-script
+# tools have to be, not because anything new gets pulled in.
+name: "whichports-agent"
+arch: "amd64"
+platform: "linux"
+version: "${PKG_VERSION}"
+section: "admin"
+priority: "optional"
+maintainer: "Jerome Bertens <hello@whichports.com>"
+description: |
+  Reads every filtering layer on this host and prints one JSON document:
+  listening sockets with their owning process, the nftables ruleset, legacy
+  iptables and ip6tables, ufw and firewalld configuration, container port
+  publications, overlay interface identity, and rule-file change times. The
+  agent is read-only, has no listening socket, executes nothing it did not
+  ship with, and in stdout mode sends nothing off the machine.
+vendor: "whichports"
+license: "Apache-2.0"
+homepage: "https://whichports.com"
+
+# Both programs live in /usr/bin, never under /usr/local. Two reasons, each
+# read from its source.
+#
+# Debian Policy 9.1.2 (read 2026-10-02): "packages must not
+# place any files in /usr/local, either by putting them in the file system
+# archive to be unpacked by dpkg or by manipulating them in their maintainer
+# scripts." /usr/local belongs to the machine's administrator.
+#
+# And until 0.1.12 they were in /usr/local/bin, which sudo's secure_path
+# leaves out on the RHEL family and on openSUSE, so the install command's
+# `sudo whichports-agent enroll` and `sudo whichports-uninstall` both answered
+# "command not found" there (measured on Rocky 8.10, AlmaLinux 10 and openSUSE
+# Leap 16.0, docs/RECORD.md 4.220 and 4.230). /usr/bin is on that path on
+# every family measured. packaging/paths_test.go holds this file and the unit
+# to it.
+contents:
+  - src: "./dist/whichports-agent"
+    dst: "/usr/bin/whichports-agent"
+    file_info:
+      mode: 0755
+  - src: "./packaging/systemd/whichports-agent.service"
+    dst: "/usr/lib/systemd/system/whichports-agent.service"
+  - src: "./packaging/systemd/whichports-agent.timer"
+    dst: "/usr/lib/systemd/system/whichports-agent.timer"
+  # Shipped in the package rather than fetched, so removing the agent needs no
+  # network and no second trip to a website. It is the answer to the four
+  # things a package removal leaves behind (docs/PRODUCT.md 4f).
+  - src: "./packaging/uninstall.sh"
+    dst: "/usr/bin/whichports-uninstall"
+    file_info:
+      mode: 0755
+
+scripts:
+  postinstall: "./packaging/scripts/postinstall.sh"
+  preremove: "./packaging/scripts/preremove.sh"
+  postremove: "./packaging/scripts/postremove.sh"
+
+# Signing is optional at build time: presence of $SIGNING_KEY_FILE turns it
+# on, which is what lets `make package` work without any key material.
+deb:
+  signature:
+    key_file: "${SIGNING_KEY_FILE}"
+rpm:
+  signature:
+    key_file: "${SIGNING_KEY_FILE}"
+
+# useradd and groupadd for the post-install script: passwd owns them on the
+# Debian family, shadow-utils on the RHEL family. setfacl and getfacl for the
+# read grants the installer applies on ufw's and firewalld's files and the
+# removers take back: the acl package on both families, which a server does
+# not always have (the ubuntu image the clean-box harness starts from does
+# not), and a grant that silently did not happen is a Rules tab that reads
+# "not readable" with nothing saying why.
+overrides:
+  deb:
+    depends:
+      - passwd
+      - acl
+  rpm:
+    depends:
+      - shadow-utils
+      - acl

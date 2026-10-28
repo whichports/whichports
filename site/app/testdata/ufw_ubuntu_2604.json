@@ -1,0 +1,1488 @@
+{
+ "schema_version": 1,
+ "hostname": "ubuntu-ufw-01",
+ "collected_at_unix": 1791749124,
+ "sockets": {
+  "status": "collected",
+  "sources": {
+   "cgroup2": {
+    "status": "collected"
+   },
+   "passwd": {
+    "status": "collected"
+   },
+   "sock_diag": {
+    "status": "collected"
+   },
+   "tcp": {
+    "status": "collected"
+   },
+   "tcp6": {
+    "status": "collected"
+   },
+   "udp": {
+    "status": "collected"
+   },
+   "udp6": {
+    "status": "collected"
+   }
+  },
+  "listening": []
+ },
+ "socket_units": {
+  "status": "collected",
+  "sources": {
+   "etc_systemd_system": {
+    "status": "collected"
+   },
+   "run_systemd_generator": {
+    "status": "not_present"
+   },
+   "run_systemd_generator_early": {
+    "status": "not_present"
+   },
+   "run_systemd_generator_late": {
+    "status": "not_present"
+   },
+   "run_systemd_system": {
+    "status": "not_present"
+   },
+   "usr_lib_systemd_system": {
+    "status": "collected"
+   },
+   "usr_local_lib_systemd_system": {
+    "status": "not_present"
+   }
+  }
+ },
+ "interface_addresses": {
+  "status": "collected",
+  "addresses": []
+ },
+ "nftables": {
+  "status": "collected",
+  "tables": [
+   {
+    "family": "ip",
+    "name": "filter",
+    "chains": [
+     {
+      "name": "FORWARD",
+      "type": "filter",
+      "hook": "forward",
+      "priority": 0,
+      "policy": "drop",
+      "rules": [
+       {
+        "text": "counter jump ufw-before-logging-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-before-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-after-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-after-logging-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-reject-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-track-forward",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "INPUT",
+      "type": "filter",
+      "hook": "input",
+      "priority": 0,
+      "policy": "drop",
+      "rules": [
+       {
+        "text": "counter jump ufw-before-logging-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-before-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-after-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-after-logging-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-reject-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-track-input",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "OUTPUT",
+      "type": "filter",
+      "hook": "output",
+      "priority": 0,
+      "policy": "accept",
+      "rules": [
+       {
+        "text": "counter jump ufw-before-logging-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-before-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-after-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-after-logging-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-reject-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-track-output",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-after-forward"
+     },
+     {
+      "name": "ufw-after-input",
+      "rules": [
+       {
+        "text": "ip protocol udp udp dport 137 counter jump ufw-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "ip protocol udp udp dport 138 counter jump ufw-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "ip protocol tcp tcp dport 139 counter jump ufw-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "ip protocol tcp tcp dport 445 counter jump ufw-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "ip protocol udp udp dport 67 counter jump ufw-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "ip protocol udp udp dport 68 counter jump ufw-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "[xt match addrtype] counter jump ufw-skip-to-policy-input",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw-after-logging-forward",
+      "rules": [
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw-after-logging-input",
+      "rules": [
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw-after-logging-output"
+     },
+     {
+      "name": "ufw-after-output"
+     },
+     {
+      "name": "ufw-before-forward",
+      "rules": [
+       {
+        "text": "[xt match conntrack] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol icmp [xt match icmp] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol icmp [xt match icmp] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol icmp [xt match icmp] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol icmp [xt match icmp] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "counter jump ufw-user-forward",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-before-input",
+      "rules": [
+       {
+        "text": "iifname \"lo\" counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "[xt match conntrack] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "[xt match conntrack] counter jump ufw-logging-deny",
+        "rendered": "partial"
+       },
+       {
+        "text": "[xt match conntrack] counter drop",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol icmp [xt match icmp] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol icmp [xt match icmp] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol icmp [xt match icmp] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol icmp [xt match icmp] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol udp @th,0,32 0x00430044 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-not-local",
+        "rendered": "full"
+       },
+       {
+        "text": "ip daddr 224.0.0.251 ip protocol udp udp dport 5353 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "ip daddr 239.255.255.250 ip protocol udp udp dport 1900 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw-user-input",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-before-logging-forward"
+     },
+     {
+      "name": "ufw-before-logging-input"
+     },
+     {
+      "name": "ufw-before-logging-output"
+     },
+     {
+      "name": "ufw-before-output",
+      "rules": [
+       {
+        "text": "oifname \"lo\" counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "[xt match conntrack] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "counter jump ufw-user-output",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-logging-allow",
+      "rules": [
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw-logging-deny",
+      "rules": [
+       {
+        "text": "[xt match conntrack] [limit] counter return",
+        "rendered": "partial"
+       },
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw-not-local",
+      "rules": [
+       {
+        "text": "[xt match addrtype] counter return",
+        "rendered": "partial"
+       },
+       {
+        "text": "[xt match addrtype] counter return",
+        "rendered": "partial"
+       },
+       {
+        "text": "[xt match addrtype] counter return",
+        "rendered": "partial"
+       },
+       {
+        "text": "[limit] counter jump ufw-logging-deny",
+        "rendered": "partial"
+       },
+       {
+        "text": "counter drop",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-reject-forward"
+     },
+     {
+      "name": "ufw-reject-input"
+     },
+     {
+      "name": "ufw-reject-output"
+     },
+     {
+      "name": "ufw-skip-to-policy-forward",
+      "rules": [
+       {
+        "text": "counter drop",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-skip-to-policy-input",
+      "rules": [
+       {
+        "text": "counter drop",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-skip-to-policy-output",
+      "rules": [
+       {
+        "text": "counter accept",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-track-forward"
+     },
+     {
+      "name": "ufw-track-input"
+     },
+     {
+      "name": "ufw-track-output",
+      "rules": [
+       {
+        "text": "ip protocol tcp [xt match conntrack] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip protocol udp [xt match conntrack] counter accept",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw-user-forward"
+     },
+     {
+      "name": "ufw-user-input",
+      "rules": [
+       {
+        "text": "ip protocol tcp tcp dport 22 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "ip protocol tcp tcp dport 80 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "ip protocol tcp tcp dport 5432 counter drop",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-user-limit",
+      "rules": [
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       },
+       {
+        "text": "counter [xt target REJECT]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw-user-limit-accept",
+      "rules": [
+       {
+        "text": "counter accept",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw-user-logging-forward"
+     },
+     {
+      "name": "ufw-user-logging-input"
+     },
+     {
+      "name": "ufw-user-logging-output"
+     },
+     {
+      "name": "ufw-user-output"
+     }
+    ]
+   },
+   {
+    "family": "ip6",
+    "name": "filter",
+    "chains": [
+     {
+      "name": "FORWARD",
+      "type": "filter",
+      "hook": "forward",
+      "priority": 0,
+      "policy": "drop",
+      "rules": [
+       {
+        "text": "counter jump ufw6-before-logging-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-before-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-after-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-after-logging-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-reject-forward",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-track-forward",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "INPUT",
+      "type": "filter",
+      "hook": "input",
+      "priority": 0,
+      "policy": "drop",
+      "rules": [
+       {
+        "text": "counter jump ufw6-before-logging-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-before-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-after-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-after-logging-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-reject-input",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-track-input",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "OUTPUT",
+      "type": "filter",
+      "hook": "output",
+      "priority": 0,
+      "policy": "accept",
+      "rules": [
+       {
+        "text": "counter jump ufw6-before-logging-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-before-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-after-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-after-logging-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-reject-output",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-track-output",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-after-forward"
+     },
+     {
+      "name": "ufw6-after-input",
+      "rules": [
+       {
+        "text": "meta l4proto udp udp dport 137 counter jump ufw6-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "meta l4proto udp udp dport 138 counter jump ufw6-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "meta l4proto tcp tcp dport 139 counter jump ufw6-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "meta l4proto tcp tcp dport 445 counter jump ufw6-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "meta l4proto udp udp dport 546 counter jump ufw6-skip-to-policy-input",
+        "rendered": "full"
+       },
+       {
+        "text": "meta l4proto udp udp dport 547 counter jump ufw6-skip-to-policy-input",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-after-logging-forward",
+      "rules": [
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-after-logging-input",
+      "rules": [
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-after-logging-output"
+     },
+     {
+      "name": "ufw6-after-output"
+     },
+     {
+      "name": "ufw6-before-forward",
+      "rules": [
+       {
+        "text": "[xt match rt] counter drop",
+        "rendered": "partial"
+       },
+       {
+        "text": "[xt match conntrack] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "counter jump ufw6-user-forward",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-before-input",
+      "rules": [
+       {
+        "text": "iifname \"lo\" counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "[xt match rt] counter drop",
+        "rendered": "partial"
+       },
+       {
+        "text": "[xt match conntrack] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "[xt match conntrack] counter jump ufw6-logging-deny",
+        "rendered": "partial"
+       },
+       {
+        "text": "[xt match conntrack] counter drop",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 ip6 daddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto udp @th,0,32 0x02230222 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "ip6 daddr ff02::fb meta l4proto udp udp dport 5353 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "ip6 daddr ff02::f meta l4proto udp udp dport 1900 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "counter jump ufw6-user-input",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-before-logging-forward"
+     },
+     {
+      "name": "ufw6-before-logging-input"
+     },
+     {
+      "name": "ufw6-before-logging-output"
+     },
+     {
+      "name": "ufw6-before-output",
+      "rules": [
+       {
+        "text": "oifname \"lo\" counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "[xt match rt] counter drop",
+        "rendered": "partial"
+       },
+       {
+        "text": "[xt match conntrack] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "ip6 saddr & 0xffc00000000000000000000000000000 == 0xfe800000000000000000000000000000 meta l4proto icmpv6 [xt match icmp6] [xt match hl] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "counter jump ufw6-user-output",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-logging-allow",
+      "rules": [
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-logging-deny",
+      "rules": [
+       {
+        "text": "[xt match conntrack] [limit] counter return",
+        "rendered": "partial"
+       },
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-reject-forward"
+     },
+     {
+      "name": "ufw6-reject-input"
+     },
+     {
+      "name": "ufw6-reject-output"
+     },
+     {
+      "name": "ufw6-skip-to-policy-forward",
+      "rules": [
+       {
+        "text": "counter drop",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-skip-to-policy-input",
+      "rules": [
+       {
+        "text": "counter drop",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-skip-to-policy-output",
+      "rules": [
+       {
+        "text": "counter accept",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-track-forward"
+     },
+     {
+      "name": "ufw6-track-input"
+     },
+     {
+      "name": "ufw6-track-output",
+      "rules": [
+       {
+        "text": "meta l4proto tcp [xt match conntrack] counter accept",
+        "rendered": "partial"
+       },
+       {
+        "text": "meta l4proto udp [xt match conntrack] counter accept",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-user-forward"
+     },
+     {
+      "name": "ufw6-user-input",
+      "rules": [
+       {
+        "text": "meta l4proto tcp tcp dport 22 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "meta l4proto tcp tcp dport 80 counter accept",
+        "rendered": "full"
+       },
+       {
+        "text": "meta l4proto tcp tcp dport 5432 counter drop",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-user-limit",
+      "rules": [
+       {
+        "text": "[limit] counter [xt target LOG]",
+        "rendered": "partial"
+       },
+       {
+        "text": "counter [xt target REJECT]",
+        "rendered": "partial"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-user-limit-accept",
+      "rules": [
+       {
+        "text": "counter accept",
+        "rendered": "full"
+       }
+      ]
+     },
+     {
+      "name": "ufw6-user-logging-forward"
+     },
+     {
+      "name": "ufw6-user-logging-input"
+     },
+     {
+      "name": "ufw6-user-logging-output"
+     },
+     {
+      "name": "ufw6-user-output"
+     }
+    ]
+   }
+  ]
+ },
+ "ufw": {
+  "status": "collected",
+  "sources": {
+   "default": {
+    "status": "collected"
+   },
+   "ufw.conf": {
+    "status": "collected"
+   },
+   "user.rules": {
+    "status": "collected"
+   },
+   "user6.rules": {
+    "status": "collected"
+   }
+  },
+  "conf": {
+   "ENABLED": "yes",
+   "LOGLEVEL": "low"
+  },
+  "defaults": {
+   "DEFAULT_APPLICATION_POLICY": "SKIP",
+   "DEFAULT_FORWARD_POLICY": "DROP",
+   "DEFAULT_INPUT_POLICY": "DROP",
+   "DEFAULT_OUTPUT_POLICY": "ACCEPT",
+   "IPT_MODULES": "",
+   "IPT_SYSCTL": "/etc/ufw/sysctl.conf",
+   "IPV6": "yes",
+   "MANAGE_BUILTINS": "no"
+  },
+  "rules": [
+   "allow tcp 22 0.0.0.0/0 any 0.0.0.0/0 in",
+   "allow tcp 80 0.0.0.0/0 any 0.0.0.0/0 in",
+   "deny tcp 5432 0.0.0.0/0 any 0.0.0.0/0 in"
+  ],
+  "rules6": [
+   "allow tcp 22 ::/0 any ::/0 in",
+   "allow tcp 80 ::/0 any ::/0 in",
+   "deny tcp 5432 ::/0 any ::/0 in"
+  ]
+ },
+ "firewalld": {
+  "status": "not_present",
+  "sources": {
+   "etc_zones": {
+    "status": "not_present"
+   },
+   "firewalld.conf": {
+    "status": "not_present"
+   },
+   "vendor_zones": {
+    "status": "not_present"
+   }
+  }
+ },
+ "rule_files": {
+  "status": "collected",
+  "files": [
+   {
+    "path": "/etc/default/ufw",
+    "mtime_unix": 1765019080
+   },
+   {
+    "path": "/etc/nftables.conf",
+    "mtime_unix": 1749579155
+   },
+   {
+    "path": "/etc/ufw/after.rules",
+    "mtime_unix": 1765019080
+   },
+   {
+    "path": "/etc/ufw/after6.rules",
+    "mtime_unix": 1765019080
+   },
+   {
+    "path": "/etc/ufw/before.rules",
+    "mtime_unix": 1765019080
+   },
+   {
+    "path": "/etc/ufw/before6.rules",
+    "mtime_unix": 1765019080
+   },
+   {
+    "path": "/etc/ufw/ufw.conf",
+    "mtime_unix": 1791749124
+   },
+   {
+    "path": "/etc/ufw/user.rules",
+    "mtime_unix": 1791749124
+   },
+   {
+    "path": "/etc/ufw/user6.rules",
+    "mtime_unix": 1791749124
+   }
+  ]
+ },
+ "containers": {
+  "status": "not_present",
+  "sources": {
+   "docker": {
+    "status": "not_present"
+   },
+   "podman": {
+    "status": "not_present"
+   }
+  }
+ },
+ "iptables": {
+  "status": "collected",
+  "sources": {
+   "filter": {
+    "status": "collected"
+   },
+   "mangle": {
+    "status": "collected"
+   },
+   "nat": {
+    "status": "collected"
+   },
+   "raw": {
+    "status": "collected"
+   },
+   "security": {
+    "status": "not_present"
+   }
+  },
+  "tables": [
+   {
+    "name": "filter",
+    "chains": [
+     {
+      "name": "INPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "FORWARD",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "OUTPUT",
+      "builtin": true,
+      "policy": "accept"
+     }
+    ]
+   },
+   {
+    "name": "mangle",
+    "chains": [
+     {
+      "name": "PREROUTING",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "INPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "FORWARD",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "OUTPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "POSTROUTING",
+      "builtin": true,
+      "policy": "accept"
+     }
+    ]
+   },
+   {
+    "name": "nat",
+    "chains": [
+     {
+      "name": "PREROUTING",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "INPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "OUTPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "POSTROUTING",
+      "builtin": true,
+      "policy": "accept"
+     }
+    ]
+   },
+   {
+    "name": "raw",
+    "chains": [
+     {
+      "name": "PREROUTING",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "OUTPUT",
+      "builtin": true,
+      "policy": "accept"
+     }
+    ]
+   }
+  ]
+ },
+ "ip6tables": {
+  "status": "collected",
+  "sources": {
+   "filter": {
+    "status": "collected"
+   },
+   "mangle": {
+    "status": "collected"
+   },
+   "nat": {
+    "status": "collected"
+   },
+   "raw": {
+    "status": "collected"
+   },
+   "security": {
+    "status": "not_present"
+   }
+  },
+  "tables": [
+   {
+    "name": "filter",
+    "chains": [
+     {
+      "name": "INPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "FORWARD",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "OUTPUT",
+      "builtin": true,
+      "policy": "accept"
+     }
+    ]
+   },
+   {
+    "name": "mangle",
+    "chains": [
+     {
+      "name": "PREROUTING",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "INPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "FORWARD",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "OUTPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "POSTROUTING",
+      "builtin": true,
+      "policy": "accept"
+     }
+    ]
+   },
+   {
+    "name": "nat",
+    "chains": [
+     {
+      "name": "PREROUTING",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "INPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "OUTPUT",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "POSTROUTING",
+      "builtin": true,
+      "policy": "accept"
+     }
+    ]
+   },
+   {
+    "name": "raw",
+    "chains": [
+     {
+      "name": "PREROUTING",
+      "builtin": true,
+      "policy": "accept"
+     },
+     {
+      "name": "OUTPUT",
+      "builtin": true,
+      "policy": "accept"
+     }
+    ]
+   }
+  ]
+ },
+ "overlays": {
+  "status": "collected",
+  "sources": {
+   "interfaces": {
+    "status": "collected"
+   },
+   "netbird": {
+    "status": "collected"
+   },
+   "tailscale": {
+    "status": "collected"
+   }
+  },
+  "interfaces": [
+   {
+    "name": "bonding_masters"
+   },
+   {
+    "name": "erspan0",
+    "type": "1"
+   },
+   {
+    "name": "eth0",
+    "type": "1"
+   },
+   {
+    "name": "gre0",
+    "type": "778"
+   },
+   {
+    "name": "gretap0",
+    "type": "1"
+   },
+   {
+    "name": "ip6_vti0",
+    "type": "769"
+   },
+   {
+    "name": "ip6gre0",
+    "type": "823"
+   },
+   {
+    "name": "ip6tnl0",
+    "type": "769"
+   },
+   {
+    "name": "ip_vti0",
+    "type": "768"
+   },
+   {
+    "name": "lo",
+    "type": "772"
+   },
+   {
+    "name": "sit0",
+    "type": "776"
+   },
+   {
+    "name": "tunl0",
+    "type": "768"
+   }
+  ],
+  "tailscale": {
+   "socket": false
+  },
+  "netbird": {
+   "socket": false
+  }
+ }
+}
