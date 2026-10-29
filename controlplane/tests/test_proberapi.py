@@ -482,3 +482,133 @@ def test_init_is_idempotent(con):
     proberapi.init(con)
     proberapi.init(con)
     assert isinstance(con, sqlite3.Connection)
+
+
+# ======================================================= the lock, by the second
+#
+# The connects an hour bound what a target sees. They do not bound how long
+# one instance's batches hold the pass lock every other instance waits on: a
+# batch against an address that drops everything costs five seconds a slot,
+# so the same connects can hold the lock many times longer. Each batch's
+# charge row also carries the seconds it held the lock, written by the worker
+# after the batch, and an instance past its hour of them is refused with the
+# class it already gets for connects (docs/SPEC-open-beta.md, step 1).
+
+def _queued(con, instance, at, payload=None):
+    """One batch queued for `instance` at `at`, claimed and finished, as the
+    worker leaves it. Returns its id."""
+    batch_id = proberapi.submit(con, instance.id, parse(payload or batch()), at)
+    row = proberapi.next_queued(con, at)
+    assert row["id"] == batch_id
+    proberapi.mark_started(con, batch_id, at)
+    proberapi.record_failure(con, row, "prober_refused", at)
+    return batch_id
+
+
+def hold(con, instance, seconds, at, each=60.0):
+    """Charge `seconds` of the lock to `instance` at `at`, in batches of at
+    most `each` seconds, the way the worker writes them."""
+    while seconds > 0:
+        batch_id = _queued(con, instance, at)
+        assert proberapi.charge_lock_seconds(con, batch_id, min(each, seconds))
+        seconds -= each
+
+
+def test_a_charge_row_from_before_the_seconds_counts_none_and_keeps_its_connects():
+    """A box upgraded with charges already in its hour: the old rows gain the
+    two columns with nothing held, and their connects still count."""
+    old = db.connect(":memory:")
+    old.executescript("""
+        CREATE TABLE prober_api_charges (
+            id INTEGER PRIMARY KEY, instance_id INTEGER NOT NULL,
+            connects INTEGER NOT NULL, submitted_at TEXT NOT NULL);
+    """)
+    old.execute("INSERT INTO prober_api_charges (instance_id, connects, submitted_at)"
+                " VALUES (1, 29000, ?)", (proberapi.stamp(NOW),))
+    old.commit()
+    for module in (db, authz, vantages, instances, proberapi):
+        module.init(old)
+    one = add(old, "one")
+    assert one.id == 1
+    assert proberapi.lock_seconds_spent(old, one.id, NOW) == 0
+    with pytest.raises(proberapi.Refused) as caught:
+        proberapi.submit(old, one.id, parse(batch(
+            addresses=[V4] * proberapi.MAX_ADDRESSES,
+            ports=list(range(1, proberapi.MAX_PORTS + 1)), tls_ports=[])), NOW)
+    assert caught.value.error == "over_instance_pace"
+    old.close()
+
+
+def test_charging_a_batch_nobody_queued_changes_nothing(con):
+    one = add(con, "one")
+    assert not proberapi.charge_lock_seconds(con, "no-such-batch", 30.0)
+    assert proberapi.lock_seconds_spent(con, one.id, NOW) == 0
+
+
+def test_a_batch_is_charged_its_seconds_once_and_never_below_zero(con):
+    """The worker charges a batch once. A second charge for the same batch
+    replaces the first rather than adding to it, and a clock that answered
+    less than nothing charges nothing."""
+    one = add(con, "one")
+    batch_id = _queued(con, one, NOW)
+    assert proberapi.charge_lock_seconds(con, batch_id, 7.5)
+    assert proberapi.charge_lock_seconds(con, batch_id, 7.5)
+    assert proberapi.lock_seconds_spent(con, one.id, NOW) == 7.5
+    other = _queued(con, one, NOW)
+    assert proberapi.charge_lock_seconds(con, other, -3.0)
+    assert proberapi.lock_seconds_spent(con, one.id, NOW) == 7.5
+
+
+def test_over_the_seconds_cap_is_refused_as_over_instance_pace(con):
+    one = add(con, "one")
+    hold(con, one, proberapi.LOCK_SECONDS_PER_HOUR, NOW)
+    with pytest.raises(proberapi.Refused) as caught:
+        proberapi.submit(con, one.id, parse(batch(ports=[22], tls_ports=[])),
+                         NOW + timedelta(minutes=30))
+    assert caught.value.error == "over_instance_pace"
+    assert caught.value.status == 429
+    # Room comes back when the first batch's seconds are an hour old, thirty
+    # minutes from the refusal, and the answer says so.
+    assert 30 * 60 <= caught.value.retry_after <= 30 * 60 + 1
+
+
+def test_a_refusal_for_seconds_charges_nothing(con):
+    one = add(con, "one")
+    hold(con, one, proberapi.LOCK_SECONDS_PER_HOUR, NOW)
+    before = con.execute("SELECT COUNT(*) FROM prober_api_charges").fetchone()[0]
+    with pytest.raises(proberapi.Refused):
+        proberapi.submit(con, one.id, parse(batch()), NOW)
+    assert con.execute("SELECT COUNT(*) FROM prober_api_charges").fetchone()[0] == before
+
+
+def test_just_under_the_seconds_cap_is_let_through(con):
+    """A batch is charged after it ran, so the cap is checked on what was
+    spent: under it, the next batch goes, whatever it will cost."""
+    one = add(con, "one")
+    hold(con, one, proberapi.LOCK_SECONDS_PER_HOUR - 0.5, NOW)
+    proberapi.submit(con, one.id, parse(batch()), NOW)
+
+
+def test_lock_seconds_charged_per_instance(con):
+    one, two = add(con, "one"), add(con, "two")
+    hold(con, one, proberapi.LOCK_SECONDS_PER_HOUR, NOW)
+    assert proberapi.lock_seconds_spent(con, one.id, NOW) == proberapi.LOCK_SECONDS_PER_HOUR
+    assert proberapi.lock_seconds_spent(con, two.id, NOW) == 0
+    proberapi.submit(con, two.id, parse(batch()), NOW + timedelta(seconds=1))
+
+
+def test_seconds_age_out_after_the_hour(con):
+    one = add(con, "one")
+    hold(con, one, proberapi.LOCK_SECONDS_PER_HOUR, NOW)
+    after = NOW + timedelta(hours=1, seconds=1)
+    assert proberapi.lock_seconds_spent(con, one.id, after) == 0
+    proberapi.submit(con, one.id, parse(batch()), after)
+    proberapi.sweep(con, after)
+    assert con.execute("SELECT COUNT(*) FROM prober_api_charges"
+                       " WHERE submitted_at <= ?", (proberapi.stamp(NOW),)).fetchone()[0] == 0
+
+
+def test_the_seconds_cap_is_the_number_the_run_set():
+    """Set from the synthetic run of many instances, ops/locksim.py, and
+    written in docs/PRODUCT.md 5g. A change is the owner's."""
+    assert proberapi.LOCK_SECONDS_PER_HOUR == 600

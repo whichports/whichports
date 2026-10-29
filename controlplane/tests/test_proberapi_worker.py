@@ -406,16 +406,38 @@ def test_the_lock_is_let_go_after_the_hold(con):
     assert proberapi.next_queued(con, now()) is not None
 
 
-def test_serve_keeps_going_when_a_pass_holds_the_lock(path, con, monkeypatch):
-    calls = []
+def test_serve_keeps_going_when_a_pass_holds_the_lock(path, monkeypatch, caplog):
+    """A prober's lock held for the whole wait ends that round of its
+    thread, never the thread, and writes the typed line a grep finds."""
+    calls = {}
 
-    def round_that_waits_too_long(connection, keep_going):
-        calls.append(1)
-        raise probelock.ProbeLockHeld("held for the whole wait")
+    def held_three_times(connection, vantage, **kwargs):
+        calls[vantage.name] = calls.get(vantage.name, 0) + 1
+        if calls[vantage.name] <= 3:
+            raise probelock.ProberBusy("held for the whole wait")
+        return []
 
-    monkeypatch.setattr(proberapi_worker, "run_round", round_that_waits_too_long)
-    proberapi_worker.serve(con, rounds=3)
-    assert len(calls) == 3
+    monkeypatch.setattr(proberapi_worker, "run_prober_round", held_three_times)
+    stop = threading.Event()
+
+    def serving():
+        connection = db.connect(path)
+        try:
+            proberapi_worker.serve(connection, stop=stop)
+        finally:
+            connection.close()
+
+    server = threading.Thread(target=serving)
+    with caplog.at_level("WARNING", logger="app.proberapi_worker"):
+        server.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and min(calls.values() or [0]) < 4:
+            time.sleep(0.05)
+        stop.set()
+        server.join(10)
+    assert set(calls) == {"probe1", "probe2"}
+    assert min(calls.values()) >= 4
+    assert f"{probelock.HELD_LINE}: prober_busy vantage=probe1 worker" in caplog.messages
 
 
 def test_a_stop_lets_the_running_batch_finish_and_starts_no_other(con):
@@ -593,3 +615,69 @@ def test_the_journal_says_what_each_batch_cost(con, caplog):
     with caplog.at_level("INFO", logger="app.proberapi_worker"):
         run(con, Far())
     assert any("from probe1: done in" in message for message in caplog.messages)
+
+
+# ======================================== the seconds a batch held the lock
+
+def test_a_batch_that_failed_is_charged_its_seconds_too(con):
+    """A batch the prober refused held the lock all the same."""
+    one = instances.add(con, "one", origin=authz.ORIGIN_INVITED).instance
+    presence(con, one, V4)
+    queue(con, one, [V4])
+
+    def refusing(destination):
+        def transport(payload):
+            raise dispatch.DispatchFailed("refused")
+        return transport
+
+    # Read when the round starts, at the hold's check, when the batch
+    # starts and when it ends, then at the next check.
+    ticks = iter([0.0, 0.0, 0.0, 4.0, 4.0, 4.0, 4.0])
+    outcomes = proberapi_worker.run_round(
+        con, transport_factory=refusing, lock_wait_seconds=5,
+        clock=lambda: next(ticks))
+    assert outcomes == ["prober_refused"]
+    assert proberapi.lock_seconds_spent(con, one.id, now()) == 4.0
+
+
+def test_the_worker_charges_each_instance_the_seconds_its_batch_held_the_lock(con):
+    one = instances.add(con, "one", origin=authz.ORIGIN_INVITED).instance
+    two = instances.add(con, "two", origin=authz.ORIGIN_INVITED).instance
+    presence(con, one, V4)
+    presence(con, two, OTHER_V4)
+    queue(con, one, [V4])
+    queue(con, two, [OTHER_V4])
+    far = Far()
+    # The first batch takes seven seconds on this clock and the second three.
+    times = {0: 0.0, 1: 7.0, 2: 10.0}
+    outcomes = proberapi_worker.run_round(
+        con, transport_factory=far.factory, lock_wait_seconds=5,
+        clock=lambda: times[len(far.batches)])
+    assert outcomes == ["done", "done"]
+    assert proberapi.lock_seconds_spent(con, one.id, now()) == 7.0
+    assert proberapi.lock_seconds_spent(con, two.id, now()) == 3.0
+
+
+def test_worker_journal_line_carries_wait_and_run_seconds(con, caplog):
+    """How long a batch waited in the queue is what tells whether the lock
+    carries the instances, and the journal said only how long it ran."""
+    one = instances.add(con, "one", origin=authz.ORIGIN_INVITED).instance
+    presence(con, one, V4)
+    queued_at = now() - timedelta(seconds=42)
+    payload = {"version": dispatch.BATCH_VERSION, "vantage": "probe1",
+               "addresses": [V4], "ports": [22], "tls_ports": [],
+               "snapshot": their_snapshot([V4])}
+    registry = vantages.list_all(con)
+    parsed = proberapi.parse_batch(payload, {v.name for v in registry if v.enabled},
+                                   vantages.all_addresses(con))
+    proberapi.submit(con, one.id, parsed, queued_at)
+    with caplog.at_level("INFO", logger="app.proberapi_worker"):
+        run(con, Far())
+    lines = [m for m in caplog.messages if "batch for instance" in m]
+    assert len(lines) == 1, caplog.messages
+    line = lines[0]
+    assert "from probe1: done in" in line
+    waited = float(line.split("after ")[1].split(" s")[0])
+    assert 42.0 <= waited < 60.0, line
+    # Nothing an instance sent is in it: no address, no port.
+    assert V4 not in line and " 22" not in line

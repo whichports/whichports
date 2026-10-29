@@ -251,8 +251,13 @@ def shell(heading, lead, blocks, closing, button="Open the dashboard", link=None
     (docs/screens/mails). With no link given it is this control plane's
     dashboard (app/publicurl.py).
     """
-    if link is None:
+    if link is None and button is not None:
         link = publicurl.dashboard()
+    action = "" if button is None else f"""
+      <tr><td class="pad hair" style="padding:18px 24px 20px;
+        border-top:1px solid {LINE}">
+        {_button(button, link)}
+      </td></tr>"""
     card = f"""
   <tr><td class="panel hair" style="background:{PANEL};border:1px solid {LINE};
     border-radius:12px">
@@ -263,15 +268,11 @@ def shell(heading, lead, blocks, closing, button="Open the dashboard", link=None
         <div class="muted" style="font-family:{SANS};font-size:14px;line-height:1.5;
           color:{MUTED};margin:0">{escape(lead)}</div>
       </td></tr>
-      {blocks}
-      <tr><td class="pad hair" style="padding:18px 24px 20px;
-        border-top:1px solid {LINE}">
-        {_button(button, link)}
-      </td></tr>
+      {blocks}{action}
     </table>
   </td></tr>
 """
-    return _page(heading, card + _closing(closing))
+    return _page(heading, card + (_closing(closing) if closing else ""))
 
 
 def _row(inner, background=None, top_border=True):
@@ -337,6 +338,32 @@ def confirm(email, link, how_long):
         blocks=fields(("email", email, True)),
         closing=f"The link works once and for {how_long}.",
         button="Confirm", link=link)
+
+
+def signup_code(code, how_long):
+    """The open signup's mail: the code the installer asks for, large, and
+    no button. Nothing in it is a link, so nothing can collect for the
+    reader but the installer they ran."""
+    band = _row(f'<div class="ink" style="font-family:{MONO};font-size:28px;'
+                f'line-height:36px;letter-spacing:.2em;color:{INK_STRONG}">'
+                f'{escape(code)}</div>')
+    return shell(
+        heading="Your code",
+        lead=f"It works for {how_long}.",
+        blocks=band,
+        closing="",
+        button=None)
+
+
+def signup_ended(link, days):
+    """A signup instance the sweep ended unused: what happened, and one
+    button to the install, which signs up again."""
+    return shell(
+        heading="Your instance ended",
+        lead=f"It sent no batch and made no proof for {days} days.",
+        blocks="",
+        closing="Running the install again gives you a new one.",
+        button="Install", link=link)
 
 
 def invite(inviter, inviter_email, workspace, role, link, how_long):

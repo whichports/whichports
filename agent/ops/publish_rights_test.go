@@ -62,12 +62,39 @@ func publishLinesBetweenBuildAndSend(t *testing.T) string {
 
 func runIn(t *testing.T, dir, script string) {
 	t.Helper()
+	runInWithPath(t, dir, "/bin:/usr/bin", script)
+}
+
+func runInWithPath(t *testing.T, dir, path, script string) {
+	t.Helper()
 	cmd := exec.Command("sh", "-c", script)
 	cmd.Dir = dir
-	cmd.Env = []string{"PATH=/bin:/usr/bin"}
+	cmd.Env = []string{"PATH=" + path}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("running %q failed: %v\n%s", script, err, out)
 	}
+}
+
+// standInPython returns a folder holding a python3 that stands in for
+// selfhost/release_installer.py: it writes what it was asked, so a test reads
+// back the publish's own call. The stamping itself is release_installer.py's,
+// and selfhost/test_release_installer.py tests it.
+func standInPython(t *testing.T) string {
+	t.Helper()
+	bin := t.TempDir()
+	fake := "#!/bin/sh\necho \"stamped: $*\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "python3"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// betweenBuildAndSend is publish.sh's own lines after the build and before
+// the send, with the names they read set to something harmless.
+func betweenBuildAndSend(t *testing.T) string {
+	t.Helper()
+	return "set -eu\numask 077\nDEST=nowhere\nPUBLIC=/the/public/clone\nTAG=v9.9.9\n" +
+		publishLinesBetweenBuildAndSend(t)
 }
 
 func modeOf(t *testing.T, path string) fs.FileMode {
@@ -129,8 +156,12 @@ func TestTheTreeSentIsReadableToTheSiteWhateverTheUmask(t *testing.T) {
 	dir := t.TempDir()
 	buildUnderUmask077(t, dir)
 	// publish.sh's own lines between the build and the send, under the same
-	// umask, with the names they read set to something harmless.
-	runIn(t, dir, "set -eu\numask 077\nDEST=nowhere\n"+publishLinesBetweenBuildAndSend(t))
+	// umask, with the names they read set to something harmless. The
+	// installer they stamp into the tree is written under that umask too.
+	runInWithPath(t, dir, standInPython(t)+":/bin:/usr/bin", betweenBuildAndSend(t))
+	if _, err := os.Stat(filepath.Join(dir, "dist-repo", "selfhost.sh")); err != nil {
+		t.Fatalf("the publish's own steps left no selfhost.sh in the tree: %v", err)
+	}
 
 	tree := filepath.Join(dir, "dist-repo")
 	checked := 0
@@ -154,6 +185,38 @@ func TestTheTreeSentIsReadableToTheSiteWhateverTheUmask(t *testing.T) {
 	}
 	if checked < 10 {
 		t.Fatalf("walked %d entries, the tree was not what the test made", checked)
+	}
+}
+
+// ------------------------------------------------------- the self-hosted installer
+
+// get.whichports.com/selfhost.sh is the line selfhost/README.md gives. The
+// publish writes it into the tree it sends, stamped by release_installer.py
+// with the release's tag, read in the public repository's clone, because the
+// installer clones the public repository and builds only the commit its tag
+// names there (require-public-release.sh).
+func TestTheSelfHostedInstallerIsStampedIntoTheTreeSent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("publish.sh is a POSIX shell script")
+	}
+	dir := t.TempDir()
+	buildUnderUmask077(t, dir)
+	runInWithPath(t, dir, standInPython(t)+":/bin:/usr/bin", betweenBuildAndSend(t))
+	path := filepath.Join(dir, "dist-repo", "selfhost.sh")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("no selfhost.sh in the tree sent: %v", err)
+	}
+	want := "stamped: ../selfhost/release_installer.py --repository /the/public/clone v9.9.9\n"
+	if string(got) != want {
+		t.Errorf("selfhost.sh holds %q, want the stamper's own output for the release, %q", got, want)
+	}
+	if mode := modeOf(t, path); mode != 0o644 {
+		t.Errorf("selfhost.sh is %o, the site needs 644", mode)
+	}
+	// The stamper is the one in this repository, run from agent/.
+	if _, err := os.Stat("../../selfhost/release_installer.py"); err != nil {
+		t.Errorf("the publish runs ../selfhost/release_installer.py from agent/, and it is not there: %v", err)
 	}
 }
 
@@ -221,7 +284,7 @@ func TestTheLiveCheckAsksForEachPathTheInstallerReads(t *testing.T) {
 		t.Fatalf("every path answered 200 and the check failed:\n%s", out)
 	}
 	for _, path := range []string{"/", "/whichports-signing-public.asc",
-		"/deb/dists/stable/InRelease", "/rpm/repodata/repomd.xml"} {
+		"/deb/dists/stable/InRelease", "/rpm/repodata/repomd.xml", "/selfhost.sh"} {
 		if !strings.Contains(out, "https://get.example.com"+path+"\n") {
 			t.Errorf("the check did not name %s:\n%s", path, out)
 		}
@@ -238,6 +301,16 @@ func TestA403SaysWhichPathAndThatTheServerMayNotReadIt(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("the check's words lack %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestAMissingSelfHostedInstallerFailsTheCheck(t *testing.T) {
+	code, out := checkWith(t, map[string]string{"/selfhost.sh": "404"})
+	if code == 0 {
+		t.Fatalf("no selfhost.sh on the site passed the check:\n%s", out)
+	}
+	if !strings.Contains(out, "404 https://get.example.com/selfhost.sh: not in the tree that was sent") {
+		t.Errorf("the missing installer is not named:\n%s", out)
 	}
 }
 

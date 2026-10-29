@@ -661,7 +661,8 @@ PROOF_VERIFY_SECONDS = 20.0
 # Our refusals passed on as they are. `unknown_challenge` is passed on as the
 # registry's own word for it, `no_such_challenge`, which the window already
 # knows means start again. Every other answer is no answer.
-PROOF_REFUSALS = frozenset({"unknown_key", "malformed_request", "target_refused"})
+PROOF_REFUSALS = frozenset({"unknown_key", "malformed_request", "target_refused",
+                            "over_instance_pace"})
 
 
 def _proof_refusal(error) -> str:

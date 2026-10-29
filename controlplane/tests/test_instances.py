@@ -173,6 +173,24 @@ def test_reissue_ends_the_old_key_of_that_kind_only(con):
     assert instances.instance_for_key(con, issued.proof_key, "proof").name == "freedom"
 
 
+def test_reissue_both_ends_the_old_pair_and_leaves_one_live_pair(con):
+    """The open signup's recollect: whoever holds the first pair loses it
+    the moment the second exists, never one key of each."""
+    issued = instances.add(con, "freedom", now=NOW, origin=authz.ORIGIN_SIGNUP)
+    again = instances.reissue_both(con, "freedom", now=NOW)
+    assert again.instance.name == "freedom"
+    assert instances.instance_for_key(con, issued.api_key, "api") is None
+    assert instances.instance_for_key(con, issued.proof_key, "proof") is None
+    assert instances.instance_for_key(con, again.api_key, "api").name == "freedom"
+    assert instances.instance_for_key(con, again.proof_key, "proof").name == "freedom"
+    live = con.execute("SELECT kind FROM probe_instance_keys"
+                       " WHERE revoked_at IS NULL ORDER BY kind").fetchall()
+    assert [row[0] for row in live] == ["api", "proof"]
+    instances.revoke(con, "freedom", now=NOW)
+    with pytest.raises(instances.InstanceError, match="revoked"):
+        instances.reissue_both(con, "freedom", now=NOW)
+
+
 def test_reissue_refuses_a_revoked_instance_an_unknown_one_and_a_bad_kind(con):
     instances.add(con, "freedom", now=NOW, origin=authz.ORIGIN_INVITED)
     with pytest.raises(instances.InstanceError):
@@ -288,6 +306,22 @@ def test_cli_reissue_of_a_proof_key_says_the_agents_need_it(con, capsys):
     assert instances_cli.run(con, args(command="reissue", name="freedom",
                                        kind="proof")) == 0
     assert "Re-enrol" in capsys.readouterr().out
+
+
+def test_cli_revoke_unused_ends_it_and_frees_its_address(con, capsys):
+    """For a signup instance whose line was lost: ended the way the sweep
+    ends an unused one, so its address may sign up again, where a plain
+    revoke keeps the address out for 30 days."""
+    instances.add(con, "lost", now=NOW, origin=authz.ORIGIN_SIGNUP,
+                  contact="ann@example.org")
+    assert instances_cli.run(con, args(command="revoke", name="lost", unused=True)) == 0
+    assert "revoked lost" in capsys.readouterr().out
+    assert instances.by_name(con, "lost").revoked_at is not None
+    assert not instances.address_taken(con, "ann@example.org")
+    instances.add(con, "kept", now=NOW, origin=authz.ORIGIN_SIGNUP,
+                  contact="bob@example.org")
+    assert instances_cli.run(con, args(command="revoke", name="kept", unused=False)) == 0
+    assert instances.address_taken(con, "bob@example.org")
 
 
 def test_cli_revoke(con, capsys):

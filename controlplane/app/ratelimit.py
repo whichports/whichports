@@ -91,6 +91,31 @@ BETA_GLOBAL_REFILL_PER_SECOND = 1.0
 BETA_MAIL_CAPACITY = 20.0
 BETA_MAIL_REFILL_PER_SECOND = 1.0 / 180.0
 
+# The open signup's signup route (app/instancesignup_routes.py), the same
+# numbers as the beta list's and for the same reasons: per client five in a
+# burst then one a minute, the weak half, and three hundred then one a
+# second in all. A request past them mails nobody and keeps nothing.
+SIGNUP_CLIENT_CAPACITY = BETA_CLIENT_CAPACITY
+SIGNUP_CLIENT_REFILL_PER_SECOND = BETA_CLIENT_REFILL_PER_SECOND
+SIGNUP_GLOBAL_CAPACITY = BETA_GLOBAL_CAPACITY
+SIGNUP_GLOBAL_REFILL_PER_SECOND = BETA_GLOBAL_REFILL_PER_SECOND
+
+# The open signup's collect and done routes, per client: ten in a burst,
+# then one every ten seconds. A person types a code a few times and never
+# polls, so five wrong codes, the right one and done fit in the burst, and
+# a guesser's burst ends at ten. The claim's own five tries bound the
+# guessing. In all, three hundred then one a second, as for every other
+# route a stranger reaches, since past EMAIL_BUCKET_MAX_KEYS clients the
+# per-client count forgets the oldest (the code's challenge of 28 October).
+COLLECT_CLIENT_CAPACITY = 10.0
+COLLECT_CLIENT_REFILL_PER_SECOND = 1.0 / 10.0
+COLLECT_GLOBAL_CAPACITY = 300.0
+COLLECT_GLOBAL_REFILL_PER_SECOND = 1.0
+
+# The owner's mail that an instance signed up, bounded like the beta list's.
+SIGNUP_MAIL_CAPACITY = BETA_MAIL_CAPACITY
+SIGNUP_MAIL_REFILL_PER_SECOND = BETA_MAIL_REFILL_PER_SECOND
+
 # Roughly a megabyte of entries. The cap bounds memory, it is not meant to be
 # reached by anything legitimate.
 EMAIL_BUCKET_MAX_KEYS = 10_000
@@ -180,3 +205,15 @@ class Limiters:
         BETA_GLOBAL_CAPACITY, BETA_GLOBAL_REFILL_PER_SECOND))
     beta_mail: TokenBucket = field(default_factory=lambda: TokenBucket(
         BETA_MAIL_CAPACITY, BETA_MAIL_REFILL_PER_SECOND))
+    signup_client: TokenBucket = field(default_factory=lambda: TokenBucket(
+        SIGNUP_CLIENT_CAPACITY, SIGNUP_CLIENT_REFILL_PER_SECOND,
+        max_keys=EMAIL_BUCKET_MAX_KEYS))
+    signup_global: TokenBucket = field(default_factory=lambda: TokenBucket(
+        SIGNUP_GLOBAL_CAPACITY, SIGNUP_GLOBAL_REFILL_PER_SECOND))
+    collect_client: TokenBucket = field(default_factory=lambda: TokenBucket(
+        COLLECT_CLIENT_CAPACITY, COLLECT_CLIENT_REFILL_PER_SECOND,
+        max_keys=EMAIL_BUCKET_MAX_KEYS))
+    collect_global: TokenBucket = field(default_factory=lambda: TokenBucket(
+        COLLECT_GLOBAL_CAPACITY, COLLECT_GLOBAL_REFILL_PER_SECOND))
+    signup_mail: TokenBucket = field(default_factory=lambda: TokenBucket(
+        SIGNUP_MAIL_CAPACITY, SIGNUP_MAIL_REFILL_PER_SECOND))

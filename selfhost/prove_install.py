@@ -23,17 +23,26 @@ For each image, in this order:
      which refuses file:// (checked here). The questions are answered on the
      terminal and the plan with a yes. The domain ends in `.internal`, so
      Caddy takes its certificate from its own authority and no authority is
-     asked. The invite's keys were never issued and its host is
-     `prober.invalid`, so the instance asks nobody for our probers.
+     asked. And one line of the script names our probers' host
+     `prober.invalid` in place of app.whichports.com, so nothing reaches our
+     API: a stand-in for it answers there, in a container of the control
+     plane's image on Docker's bridge, with a certificate made for the run
+     that the container trusts. The container's /etc/hosts points the name
+     at it, and it is asked for a word of its own before the line runs. The
+     stand-in takes the signup, answers the code typed at the terminal with
+     an invite line whose keys were never issued, and the stack, which
+     cannot resolve `.invalid`, asks nobody for our probers.
   3. Before the install, a program holding 443: the line stops before asking.
   4. The install, read back from the stack: the script's exit and its last
-     lines, the plan naming the probers' host, the terminal holding no
-     password, `.env` in /opt/whichports mode 600 holding the answers, the
+     lines, the plan naming the probers' host and the mail, what the
+     stand-in was sent, the terminal holding no password, `.env` in
+     /opt/whichports mode 600 holding the answers and the line, the
      three containers up and Caddy healthy, the sockets on the machine's
      network (443 and the ingest on 127.0.0.1, nothing on 80), a sign-in
      through Caddy with that password, the commit in the dashboard's footer,
      and Add server's line carrying the proof key and not the API key.
-  5. The same line again: exit 0, `.env` untouched, no second account.
+  5. The same line again: exit 0, `.env` untouched, no second account, and
+     our probers asked once, with the line's API key, whether they know it.
   6. The line without sudo: it is refused, and nothing changes.
   7. A file of /opt/whichports given to `tester`, then a local edit: each
      stops the line before anything is asked, and is put back.
@@ -72,14 +81,28 @@ DOMAIN = "proof.whichports.internal"
 EMAIL = "proof@example.com"
 API_KEY = "whpi_" + "0" * 64
 PROOF_KEY = "whpp_" + "1" * 64
-INVITE = f"whpinvite1_prober.invalid_{API_KEY}_{PROOF_KEY}"
-PROMPTS = ("Go on?", "Your domain", "Your invite", "An email address",
-           "A password for it", "The same password again")
+PROBERS = "prober.invalid"
+INVITE = f"whpinvite1_{PROBERS}_{API_KEY}_{PROOF_KEY}"
+CODE = "48151623"
+STANDIN = "whichports-prove-install-api"
+PROMPTS = ("Go on?", "Your domain", "An email address",
+           "A password for it", "The same password again",
+           "Type the 8-digit code")
 IMAGE = "whichports-controlplane:local"
 PYTHON = "/srv/controlplane/.venv/bin/python"
 INSTALL_DIR = "/opt/whichports"
 SELFHOST = f"{INSTALL_DIR}/selfhost"
 HOLDER = "whichports-prove-install-holds-443"
+
+# Where each system keeps the authorities it trusts, and the command that
+# reads them again: the stand-in's certificate goes there for the run.
+TRUST = {
+    "ubuntu:26.04": ("/usr/local/share/ca-certificates/whichports-proof.crt", "update-ca-certificates"),
+    "debian:13": ("/usr/local/share/ca-certificates/whichports-proof.crt", "update-ca-certificates"),
+    "ubuntu:24.04": ("/usr/local/share/ca-certificates/whichports-proof.crt", "update-ca-certificates"),
+    "almalinux:10": ("/etc/pki/ca-trust/source/anchors/whichports-proof.crt", "update-ca-trust"),
+    "fedora:44": ("/etc/pki/ca-trust/source/anchors/whichports-proof.crt", "update-ca-trust"),
+}
 
 # What each system installs, from selfhost/README.md: the distribution's own
 # packages where it names them, and Docker's repository where it does not.
@@ -175,15 +198,131 @@ class Box:
              "tag", "-a", tag, "-m", "the release under proof", commit])
         script = run(["git", "-C", str(REPO), "show", "HEAD:selfhost/install.sh"]).stdout
         stamped = release_installer.stamp(script, tag, commit)
+        ours = "PROBERS=app.whichports.com\n"
+        assert stamped.count(ours) == 1
+        stamped = stamped.replace(ours, f"PROBERS={PROBERS}\n")
         run(["docker", "exec", "-i", self.name, "sh", "-c", "cat > /srv/selfhost.sh"],
             input=stamped)
         return commit
+
+    def trust(self, standin: "Standin") -> None:
+        """The stand-in's certificate among the authorities this system
+        trusts, and its name pointing at it. Then the stand-in is asked
+        for its own word, so the line cannot reach anything else."""
+        where, command = TRUST[self.image]
+        run(["docker", "exec", "-i", self.name, "sh", "-c", f"cat > {where}"],
+            input=standin.certificate)
+        self.sh(command)
+        # A newline first: Docker's /etc/hosts may end without one.
+        self.sh(f"printf '\\n%s %s\\n' '{standin.address}' '{PROBERS}' >> /etc/hosts")
+        path, expected = standin.identity
+        word = self.sh(f"curl --proto '=https' --tlsv1.2 -sS https://{PROBERS}{path}",
+                       check=False).stdout
+        if expected not in word:
+            raise RuntimeError(f"https://{PROBERS} is not what this run started: {word[:80]!r}")
 
     def remove(self) -> None:
         hold(False)
         self.sh(f"test -d {SELFHOST} && docker compose -f {SELFHOST}/compose.yaml"
                 " down -v --remove-orphans", check=False, timeout=300)
         run(["docker", "rm", "-f", self.name], check=False)
+
+
+# Our probers' API as the installer meets it: the signup takes any address
+# and claim, the code typed at the terminal brings back a line whose keys
+# were never issued, done is done, and the line's API key is known. Every
+# call is written down, with what came in, for the checks to read.
+STANDIN_API = r'''
+import http.server, json, os, ssl
+CODE, LINE, KEY = os.environ["CODE"], os.environ["LINE"], os.environ["KEY"]
+open("/tmp/cert.pem", "w").write(os.environ["CERT"])
+open("/tmp/key.pem", "w").write(os.environ["PRIVATE"])
+class Api(http.server.BaseHTTPRequestHandler):
+    def answer(self, status, text):
+        # With its length said, curl reads the answer to its end and not to
+        # a close, which OpenSSL 3 calls an error when it comes without
+        # TLS's own goodbye.
+        data = text.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def note(self, body):
+        with open("/tmp/calls.jsonl", "a") as log:
+            log.write(json.dumps({"path": self.path, "body": body,
+                                  "auth": self.headers.get("Authorization", "")}) + "\n")
+    def do_GET(self):
+        if self.path == "/proof-standin":
+            return self.answer(200, "the stand-in")
+        self.note("")
+        known = self.headers.get("Authorization") == "Bearer " + KEY
+        self.answer(200 if known else 401, "{}")
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        self.note(body)
+        sent = json.loads(body)
+        if self.path == "/api/v1/instance-signup":
+            return self.answer(200, "sent")
+        if self.path == "/api/v1/instance-signup/collect":
+            return self.answer(200, LINE if sent.get("code") == CODE else "wrong")
+        if self.path == "/api/v1/instance-signup/done":
+            return self.answer(200, "done")
+        self.answer(404, "")
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(("0.0.0.0", 443), Api)
+tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+tls.load_cert_chain("/tmp/cert.pem", "/tmp/key.pem")
+server.socket = tls.wrap_socket(server.socket, server_side=True)
+server.serve_forever()
+'''
+
+
+# The image Compose built carries Compose's project label, and a container
+# inherits its image's labels. Started from it by hand, a container would
+# read as a stack named whichports, which the installer refuses to take over.
+OWN_LABEL = ("--label", "com.docker.compose.project=whichports-prove-install")
+
+
+def certificate() -> tuple:
+    """A certificate for `prober.invalid` and its key, made for one run, kept
+    in no file once this returns. It is its own authority, which is what the
+    container trusts."""
+    with tempfile.TemporaryDirectory() as folder:
+        key, cert = Path(folder) / "key.pem", Path(folder) / "cert.pem"
+        run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", str(key), "-out", str(cert), "-days", "2",
+             "-subj", f"/CN={PROBERS}", "-addext", f"subjectAltName=DNS:{PROBERS}",
+             "-addext", "basicConstraints=critical,CA:TRUE"])
+        return cert.read_text(), key.read_text()
+
+
+class Standin:
+    """The stand-in for our probers' API, on Docker's bridge, with a
+    certificate for `prober.invalid` made for this run and never kept."""
+
+    # What the container asks to know it reached this and nothing else.
+    identity = ("/proof-standin", "the stand-in")
+
+    def start(self) -> None:
+        run(["docker", "rm", "-f", STANDIN], check=False)
+        self.certificate, private = certificate()
+        run(["docker", "run", "-d", "--name", STANDIN, *OWN_LABEL,
+             "-e", f"CODE={CODE}", "-e", f"LINE={INVITE}", "-e", f"KEY={API_KEY}",
+             "-e", f"CERT={self.certificate}", "-e", f"PRIVATE={private}",
+             "--entrypoint", PYTHON, IMAGE, "-c", STANDIN_API])
+        self.address = run(["docker", "inspect", "-f",
+                            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+                            STANDIN]).stdout.strip()
+        time.sleep(1)
+
+    def calls(self) -> list:
+        found = run(["docker", "exec", STANDIN, "cat", "/tmp/calls.jsonl"], check=False).stdout
+        return [json.loads(line) for line in found.splitlines() if line.strip()]
+
+    def remove(self) -> None:
+        run(["docker", "rm", "-f", STANDIN], check=False)
 
 
 def hold(on: bool) -> None:
@@ -197,8 +336,10 @@ def hold(on: bool) -> None:
 
 def on_a_terminal(argv, answers, timeout=900) -> tuple:
     """Run argv on a pseudo terminal of this machine, the way a person runs
-    the line in ssh, and answer each question as it comes. Returns the exit
-    code and everything the terminal showed."""
+    the line in ssh, and answer each question as it comes. An answer that is
+    a function is called when its question comes, for one that only exists
+    by then, such as a code in a mail. Returns the exit code and everything
+    the terminal showed."""
     pid, master = pty.fork()
     if pid == 0:
         os.execvp(argv[0], argv)
@@ -221,7 +362,10 @@ def on_a_terminal(argv, answers, timeout=900) -> tuple:
             # The echo goes off a moment after the question is shown on the
             # far side. A person types later than that.
             time.sleep(0.3)
-            os.write(master, (pending.pop(0) if pending else "\x04").encode() + b"\r")
+            answer = pending.pop(0) if pending else "\x04"
+            if callable(answer):
+                answer = answer()
+            os.write(master, answer.encode() + b"\r")
     else:
         os.kill(pid, 9)
     _, status = os.waitpid(pid, 0)
@@ -324,7 +468,7 @@ def through_caddy(box: Box, password: str) -> dict:
 
 
 def answers(password: str) -> list:
-    return [DOMAIN, INVITE, EMAIL, password, password, "yes"]
+    return [DOMAIN, EMAIL, password, password, "yes", CODE]
 
 
 def refused_before_asking(box: Box, what: str, words: str) -> None:
@@ -337,9 +481,12 @@ def refused_before_asking(box: Box, what: str, words: str) -> None:
 def prove(image: str) -> None:
     print(f"\n== {image}", flush=True)
     box = Box(image)
+    standin = Standin()
     try:
+        standin.start()
         box.start()
         print(f"  {box.versions()}")
+        box.trust(standin)
         commit = box.put_the_release()
         password = "Prove-" + secrets.token_hex(6) + "-1"
 
@@ -358,8 +505,19 @@ def prove(image: str) -> None:
         code, shown = on_a_terminal(the_line(box), answers(password))
         show_tail(shown)
         say(code == 0, f"the line ended 0 in {time.monotonic() - started:.0f}s, exit {code}")
-        say("with our probers at prober.invalid" in shown and "Go on?" in shown,
-            "the plan named the probers' host and asked to go on")
+        say(f"5. ask our probers at {PROBERS} for this server: a code goes by mail to {EMAIL}" in shown
+            and "Go on?" in shown, "the plan named the probers' host and the mail, and asked to go on")
+        calls = standin.calls()
+        paths = [c["path"].rsplit("/", 1)[-1] for c in calls]
+        sent = [json.loads(c["body"]) for c in calls if c["body"]]
+        claim = sent[0].get("claim", "") if sent else ""
+        say(paths == ["instance-signup", "collect", "done"]
+            and sent[0] == {"email": EMAIL, "claim": claim}
+            and re.fullmatch(r"[0-9a-f]{64}", claim) is not None
+            and sent[1] == {"claim": claim, "code": CODE} and sent[2] == {"claim": claim},
+            f"our probers were sent the address and a claim, then the code, then done: {paths}")
+        said_claim = box.sh(f"test -e {SELFHOST}/.prober-claim && echo kept || echo gone").stdout.strip()
+        say(said_claim == "gone", f"the claim is gone once the line is written: {said_claim}")
         say(password not in shown, "the terminal never showed the password")
         say("whichports is running." in shown, "it said whichports is running")
 
@@ -372,7 +530,7 @@ def prove(image: str) -> None:
         say(lines == [f"WHICHPORTS_DOMAIN={DOMAIN}", "WHICHPORTS_HTTPS_PORT=443",
                       f"WHICHPORTS_PROBER_INVITE={INVITE}", "WHICHPORTS_PROBER_API=",
                       "WHICHPORTS_PROBER_API_KEY=", "WHICHPORTS_PROBER_PROOF_KEY="],
-            f".env holds the answers and 443: {len(lines)} lines")
+            f".env holds the answers, 443 and our probers' line: {len(lines)} lines")
 
         states = [json.loads(line) for line in
                   compose(box, "ps", "--format", "json").stdout.splitlines() if line.strip()]
@@ -423,6 +581,11 @@ def prove(image: str) -> None:
         after = box.sh(f"stat -c '%Y %s' {SELFHOST}/.env").stdout
         say(code == 0 and "left as it is" in shown and "is there already" in shown
             and before == after, f"exit {code}, .env and the account left as they were")
+        later = standin.calls()[len(calls):]
+        say([c["path"] for c in later] == ["/api/v1/prober/vantages"]
+            and later[0]["auth"] == f"Bearer {API_KEY}"
+            and "our probers know the line in" in shown,
+            f"our probers were asked once whether they know the line: {[c['path'] for c in later]}")
         accounts = compose(box, "exec", "-T", "controlplane", "python", "-m",
                            "app.users_cli", "list").stdout.split()
         say(accounts.count(EMAIL) == 1, "one account")
@@ -463,7 +626,9 @@ def prove(image: str) -> None:
         say(False, f"the run stopped: {exc}")
     finally:
         box.remove()
+        standin.remove()
         left = run(["docker", "ps", "-a", "-q", "--filter", f"name={box.name}"]).stdout.strip()
+        left += run(["docker", "ps", "-a", "-q", "--filter", f"name={STANDIN}"]).stdout.strip()
         volumes = run(["docker", "volume", "ls", "-q", "--filter",
                        "label=com.docker.compose.project=whichports"]).stdout.strip()
         say(not left and not volumes, "the container and the stack's volumes are gone")

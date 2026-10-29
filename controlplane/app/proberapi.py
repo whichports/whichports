@@ -31,13 +31,14 @@ off another machine's clock and ours is the one the gate trusts.
 
 **Per target, 40 connects a second in total, across every instance, both
 vantages and our own timers** (`docs/PRODUCT.md` 5d). The worker runs one
-batch at a time and holds `probe.lock` while it does, the same lock every
-probing pass on this box holds (`app/probelock.py`). So no two runners are
-ever in flight from us, whoever asked, and a target never sees more than one
-runner's pace. An instance and our own timers watching one address is the
-case this exists for: since 2026-10-20 one address belongs to one instance
-(`docs/PRODUCT.md` 5). The cost is throughput: every batch from every
-instance waits its turn.
+batch at a time on each prober, a thread per prober, and each batch holds the
+locks of its addresses, the same finer locks every probing pass on this box
+takes (`app/probelock.py`). So no address ever has two of our runners against
+it, whoever asked, and a target never sees more than one runner's pace. An
+instance and our own timers watching one address is the case this exists
+for: since 2026-10-20 one address belongs to one instance (`docs/PRODUCT.md`
+5), and our own fleet is never held out. The cost is throughput: an
+instance's batch waits for its prober.
 
 **Per instance, a budget and one batch at a time.** An instance may have one
 batch not yet finished, which is what its own pass does anyway, and may spend
@@ -46,6 +47,19 @@ most it could cost: every address times every port, plus a certificate read
 on every TLS port it names. Charges are rows, kept for the hour they count
 in, so a restart forgets nothing.
 
+**And the seconds its batches held the lock, since 2026-10-26.** The
+connects bound what a target sees. They do not bound how long one
+instance's batches keep every other instance waiting: a connect to an
+address that drops everything holds one of the runner's 64 slots for the
+whole five second timeout, so the same connects can hold the lock many times
+longer. The worker times each batch and writes the seconds on its charge row
+(`charge_lock_seconds`), and an instance whose batches held the lock
+`LOCK_SECONDS_PER_HOUR` or more in the last hour is refused with the same
+`over_instance_pace` and a Retry-After. A batch is charged after it ran, so
+one batch can pass the cap by its own length. The number was set from a
+synthetic run of many instances, `ops/locksim.py`, and docs/PRODUCT.md 5g
+has what it found.
+
 ## What is stored, and for how long
 
 As little as serves the answer, the pace and an abuse report. Their host
@@ -53,8 +67,12 @@ documents, host names and measurement history stay on their instance.
 
   - **the queued batch and its answer**, until the answer is fetched and never
     longer than `BATCH_TTL_SECONDS`, whatever state it is in
-  - **the charges**: one row per batch, instance, connects and time, kept
-    for the hour the pace reads them and then gone
+  - **the charges**: one row per batch, instance, connects, the seconds it
+    held the lock and time, kept for the hour the pace reads them and then
+    gone
+  - **the proof counts**: one row per proof an instance started or read, its
+    challenge for a read and the time, kept for the hour the pace reads them
+    (`PROOF_STARTS_PER_HOUR`) and then gone
   - **the abuse log**: one row per instance, vantage, address and day, with
     the first and last time a batch that could reach it ran, how many did,
     and the connects they could have made. No ports, no results. Kept
@@ -75,6 +93,7 @@ not exist.
 
 import dataclasses
 import json
+import math
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -118,6 +137,28 @@ LOG_RETENTION_SECONDS = 30 * 24 * 60 * 60
 # passes an hour (six fast, one hourly) is 16,800, and the rest is Scan now.
 CONNECTS_PER_HOUR = 30_000
 PACE_WINDOW_SECONDS = 60 * 60
+
+# How many seconds of a prober's lock one instance's batches may hold in any
+# hour, the one pass lock until the finer locks of 28 October (phase 1 of
+# docs/SPEC-probe-locks.md). A sixth of the hour, set from the synthetic run
+# of 27 October (ops/locksim.py, docs/PRODUCT.md 5g): about what an instance
+# of five servers of thirty ports holds, and it bounded an instance sending
+# the longest batch nonstop to its cap and one batch past it.
+LOCK_SECONDS_PER_HOUR = 600
+
+# The proofs an instance may start and read in any hour, and how often one
+# challenge may be read. Since the open signup a stranger holds an API key,
+# and a start writes a row and a verify makes our side read a DNS record or
+# a file at an address the instance names. Worked from an honest instance:
+# forty addresses proved in an hour, each started once and verified a few
+# times while its record or file is published, fits with room left. Every
+# instance is held to them, invited or signed up (docs/PRODUCT.md 5g).
+PROOF_STARTS_PER_HOUR = 60
+PROOF_VERIFIES_PER_HOUR = 240
+PROOF_VERIFY_SPACING_SECONDS = 5
+
+PROOF_START = "start"
+PROOF_VERIFY = "verify"
 
 # Every refusal the API gives, and its HTTP status. Closed: a test holds it.
 ERRORS = {
@@ -195,6 +236,20 @@ CREATE TABLE IF NOT EXISTS prober_api_log (
 
 CREATE INDEX IF NOT EXISTS idx_prober_api_log_target
     ON prober_api_log(target, day);
+
+-- One row per proof an instance started or read, kept for the hour the
+-- pace reads it. `challenge_id` is the challenge a verify read, so one
+-- challenge is read at most once every few seconds.
+CREATE TABLE IF NOT EXISTS prober_api_proof_uses (
+    id           INTEGER PRIMARY KEY,
+    instance_id  INTEGER NOT NULL,
+    action       TEXT NOT NULL,
+    challenge_id INTEGER,
+    used_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_prober_api_proof_uses_instance
+    ON prober_api_proof_uses(instance_id, action, used_at);
 """
 
 
@@ -210,8 +265,24 @@ class Refused(Exception):
         self.retry_after = retry_after
 
 
+# Columns added to the charges after first release, the way `db.init` adds
+# one: SQLite has no ADD COLUMN IF NOT EXISTS, so the duplicate-column error
+# is the idempotence check. A row written before them has no batch and held
+# the lock for none of its seconds, which is what the defaults say.
+ADDED_CHARGE_COLUMNS = (
+    "batch_id TEXT",
+    "lock_seconds REAL NOT NULL DEFAULT 0",
+)
+
+
 def init(con: sqlite3.Connection) -> None:
     con.executescript(SCHEMA)
+    for column in ADDED_CHARGE_COLUMNS:
+        try:
+            con.execute(f"ALTER TABLE prober_api_charges ADD COLUMN {column}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc):
+                raise
     con.commit()
 
 
@@ -348,6 +419,96 @@ def _charged_in_window(con, instance_id: int, now: datetime) -> list:
         (instance_id, cutoff))]
 
 
+def lock_seconds_spent(con: sqlite3.Connection, instance_id: int,
+                       now: datetime) -> float:
+    """The seconds this instance's batches held their prober's lock, of the batches
+    it queued in the last hour."""
+    return sum(seconds for _, seconds in _lock_in_window(con, instance_id, now))
+
+
+def _lock_in_window(con, instance_id: int, now: datetime) -> list:
+    """(submitted_at, lock_seconds) for this instance's batches in the last
+    hour that held the lock at all, oldest first."""
+    cutoff = stamp(now - timedelta(seconds=PACE_WINDOW_SECONDS))
+    return [(row[0], row[1]) for row in con.execute(
+        "SELECT submitted_at, lock_seconds FROM prober_api_charges"
+        " WHERE instance_id = ? AND submitted_at > ? AND lock_seconds > 0"
+        " ORDER BY submitted_at", (instance_id, cutoff))]
+
+
+def _seconds_until_lock_room(held: list, now: datetime) -> int:
+    """How long until enough of the last hour's seconds have aged out for the
+    instance to be under its cap again. Whole seconds, at least one."""
+    spent = sum(seconds for _, seconds in held)
+    for submitted_at, seconds in held:
+        spent -= seconds
+        if spent < LOCK_SECONDS_PER_HOUR:
+            frees = datetime.fromisoformat(submitted_at) + timedelta(
+                seconds=PACE_WINDOW_SECONDS)
+            return max(1, int((frees - now).total_seconds()) + 1)
+    return PACE_WINDOW_SECONDS
+
+
+def charge_lock_seconds(con: sqlite3.Connection, batch_id: str,
+                        seconds: float) -> bool:
+    """Write how long a batch held its prober's lock on its charge row. Called by
+    the worker once the batch has run. It sets the number rather than adding
+    to it, so a batch is never charged twice, and less than nothing is
+    nothing. False when no charge row names this batch: it was queued before
+    the rows named their batch, or the hour has swept it."""
+    held = max(0.0, float(seconds))
+    changed = con.execute(
+        "UPDATE prober_api_charges SET lock_seconds = ? WHERE batch_id = ?",
+        (held, batch_id)).rowcount
+    con.commit()
+    return changed == 1
+
+
+def charge_proof(con: sqlite3.Connection, instance_id: int, action: str,
+                 now: datetime, challenge_id: int | None = None) -> None:
+    """Count one proof start or one read against this instance, or refuse it
+    as `over_instance_pace` with a Retry-After. Called before the start or
+    the read happens, so a refused one does nothing at all. The check and
+    the row are one write transaction, as in `submit`, so a burst of
+    requests from one instance cannot all find room."""
+    if action not in (PROOF_START, PROOF_VERIFY):
+        raise ValueError(f"{action!r} is not a proof action")
+    cap = PROOF_STARTS_PER_HOUR if action == PROOF_START else PROOF_VERIFIES_PER_HOUR
+    sweep(con, now)
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        used = [row[0] for row in con.execute(
+            "SELECT used_at FROM prober_api_proof_uses"
+            " WHERE instance_id = ? AND action = ? AND used_at > ?"
+            " ORDER BY used_at",
+            (instance_id, action,
+             stamp(now - timedelta(seconds=PACE_WINDOW_SECONDS))))]
+        if len(used) >= cap:
+            # Room comes back when the oldest that keeps it full is an hour old.
+            frees = datetime.fromisoformat(used[len(used) - cap]) + timedelta(
+                seconds=PACE_WINDOW_SECONDS)
+            raise Refused("over_instance_pace",
+                          retry_after=max(1, int((frees - now).total_seconds()) + 1))
+        if action == PROOF_VERIFY:
+            last = con.execute(
+                "SELECT MAX(used_at) FROM prober_api_proof_uses"
+                " WHERE instance_id = ? AND action = ? AND challenge_id = ?",
+                (instance_id, action, challenge_id)).fetchone()[0]
+            if last is not None:
+                waited = (now - datetime.fromisoformat(last)).total_seconds()
+                if waited < PROOF_VERIFY_SPACING_SECONDS:
+                    raise Refused("over_instance_pace", retry_after=max(
+                        1, math.ceil(PROOF_VERIFY_SPACING_SECONDS - waited)))
+        con.execute(
+            "INSERT INTO prober_api_proof_uses (instance_id, action, challenge_id,"
+            " used_at) VALUES (?, ?, ?, ?)",
+            (instance_id, action, challenge_id, stamp(now)))
+    except BaseException:
+        con.rollback()
+        raise
+    con.commit()
+
+
 def _seconds_until_room(charged: list, charge: int, now: datetime) -> int:
     """How long until enough of the last hour's charge has aged out for this
     batch to fit. Whole seconds, at least one, for a Retry-After header."""
@@ -383,10 +544,17 @@ def submit(con: sqlite3.Connection, instance_id: int, request: BatchRequest,
         if sum(c for _, c in charged) + charge > CONNECTS_PER_HOUR:
             raise Refused("over_instance_pace",
                           retry_after=_seconds_until_room(charged, charge, now))
-        con.execute(
-            "INSERT INTO prober_api_charges (instance_id, connects, submitted_at)"
-            " VALUES (?, ?, ?)", (instance_id, charge, stamp(now)))
+        # The seconds are known only after a batch ran, so what is checked is
+        # what the last hour's batches already held.
+        held = _lock_in_window(con, instance_id, now)
+        if sum(seconds for _, seconds in held) >= LOCK_SECONDS_PER_HOUR:
+            raise Refused("over_instance_pace",
+                          retry_after=_seconds_until_lock_room(held, now))
         batch_id = new_batch_id()
+        con.execute(
+            "INSERT INTO prober_api_charges (instance_id, connects, submitted_at,"
+            " batch_id) VALUES (?, ?, ?, ?)",
+            (instance_id, charge, stamp(now), batch_id))
         con.execute(
             "INSERT INTO prober_api_batches (id, instance_id, vantage, request,"
             " submitted_at) VALUES (?, ?, ?, ?, ?)",
@@ -438,21 +606,51 @@ def sweep(con: sqlite3.Connection, now: datetime) -> dict:
     logged = con.execute(
         "DELETE FROM prober_api_log WHERE last_at < ?",
         (stamp(now - timedelta(seconds=LOG_RETENTION_SECONDS)),)).rowcount
+    proof_uses = con.execute(
+        "DELETE FROM prober_api_proof_uses WHERE used_at < ?",
+        (stamp(now - timedelta(seconds=PACE_WINDOW_SECONDS)),)).rowcount
     con.commit()
-    return {"batches": batches, "charges": charges, "log": logged}
+    return {"batches": batches, "charges": charges, "log": logged,
+            "proof_uses": proof_uses}
 
 
 # ---------------------------------------------------------- the worker's half
 
-def next_queued(con: sqlite3.Connection, now: datetime) -> sqlite3.Row | None:
+def next_queued(con: sqlite3.Connection, now: datetime, vantage: str | None = None,
+                skip=()) -> sqlite3.Row | None:
     """The oldest batch nobody has started, if it is still inside its limit.
     Oldest first across every instance, and an instance has at most one, so
-    this is round robin without having to be written as one."""
-    return con.execute(
-        "SELECT * FROM prober_api_batches WHERE started_at IS NULL"
-        " AND finished_at IS NULL AND submitted_at >= ?"
-        " ORDER BY submitted_at, id LIMIT 1",
-        (stamp(now - timedelta(seconds=BATCH_TTL_SECONDS)),)).fetchone()
+    this is round robin without having to be written as one.
+
+    `vantage` narrows it to one prober's batches, for the worker's thread of
+    that prober. `skip` passes over batches that thread could not start in
+    this round because one of their addresses was busy, so the next one gets
+    its turn and they wait for the next round."""
+    sql = ("SELECT * FROM prober_api_batches WHERE started_at IS NULL"
+           " AND finished_at IS NULL AND submitted_at >= ?")
+    params = [stamp(now - timedelta(seconds=BATCH_TTL_SECONDS))]
+    if vantage is not None:
+        sql += " AND vantage = ?"
+        params.append(vantage)
+    skipped = sorted(skip)
+    if skipped:
+        sql += f" AND id NOT IN ({', '.join('?' for _ in skipped)})"
+        params.extend(skipped)
+    return con.execute(sql + " ORDER BY submitted_at, id LIMIT 1", params).fetchone()
+
+
+def queued_for_others(con: sqlite3.Connection, vantages, now: datetime) -> list:
+    """The batches nobody has started whose vantage is none of `vantages`,
+    the names in our registry. A vantage taken out of the registry after
+    they were queued has no thread of the worker to serve it."""
+    names = sorted(vantages)
+    sql = ("SELECT * FROM prober_api_batches WHERE started_at IS NULL"
+           " AND finished_at IS NULL AND submitted_at >= ?")
+    params = [stamp(now - timedelta(seconds=BATCH_TTL_SECONDS))]
+    if names:
+        sql += f" AND vantage NOT IN ({', '.join('?' for _ in names)})"
+        params.extend(names)
+    return con.execute(sql + " ORDER BY submitted_at, id", params).fetchall()
 
 
 def mark_started(con: sqlite3.Connection, batch_id: str, now: datetime) -> bool:
@@ -486,9 +684,10 @@ def record_failure(con: sqlite3.Connection, row, failure: str,
 
 def fail_interrupted(con: sqlite3.Connection, now: datetime) -> int:
     """Close every batch that was started and never finished. Called once when
-    the worker starts: there is one worker, so a batch it did not finish was
-    cut off by its last stop, and leaving it open would hold that instance's
-    one slot for the rest of the fifteen minutes."""
+    the worker starts, and only once it holds its life lock
+    (`proberapi_worker.WorkerLock`): there is one worker, so a batch it did
+    not finish was cut off by its last stop, and leaving it open would hold
+    that instance's one slot for the rest of the fifteen minutes."""
     closed = con.execute(
         "UPDATE prober_api_batches SET failure = 'interrupted', finished_at = ?"
         " WHERE started_at IS NOT NULL AND finished_at IS NULL",

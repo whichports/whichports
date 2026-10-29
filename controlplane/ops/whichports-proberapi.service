@@ -9,13 +9,19 @@
 # charges and queues, and this unit, which nothing outside the box can reach,
 # builds the snapshot from our registry and sends the batch.
 #
-# Every batch runs under probe.lock, the lock the probe timers and the scan
-# responder hold, so a target never has two of our runners against it,
-# whichever instance or timer asked (docs/PRODUCT.md 5d).
+# One thread per prober, each running one batch at a time under its prober's
+# lock, and every batch holding the locks of its addresses, the same finer
+# locks the probe timers and the scan responder take (app/probelock.py). So a
+# target never has two of our runners against it, whichever instance or
+# timer asked (docs/PRODUCT.md 5d). It holds proberapi.worker for its whole
+# life, so a second one started by hand exits at once.
 #
 # Long running rather than a timer, because an instance is waiting for each
-# answer and polls for it every second. Idle, it reads one row of an empty
-# table once a second and takes no lock.
+# answer and polls for it every second. Idle, each thread reads the queue and
+# forgets what has outlived its limit once a second, the worker reads the
+# registry once a second, and no thread takes a prober's lock. While a pass of
+# ours runs the threads start no batch. A thread that meets an error of no
+# known kind ends the worker with exit 1, and Restart=always starts it again.
 #
 # `systemctl restart` sends SIGTERM, and the worker lets the batch it is
 # running finish before it stops. An ordinary batch is seconds. The slowest

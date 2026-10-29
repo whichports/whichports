@@ -30,7 +30,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import (authz, db, dispatch, dnstxt, ingest, instances, prober,
-                 proberapi, proberproofs, renderbridge, store, vantages)
+                 proberapi, proberapi_routes, proberproofs, renderbridge, store,
+                 vantages)
 
 from test_api_transport import BASE, Scripted, ThroughTheIngest
 from test_proberapi_routes import P, V4, V6, key, post_batch, work
@@ -123,6 +124,16 @@ def sides(tmp_path, monkeypatch):
     ours = Side()
     monkeypatch.setattr(authz, "fetch_token_file", ours.fetch)
     monkeypatch.setattr(dnstxt, "query_txt", ours.txt)
+    # Our API reads one challenge at most once every few seconds
+    # (`proberapi.PROOF_VERIFY_SPACING_SECONDS`). A person clicking Verify
+    # twice is that far apart, so each request here is too.
+    moved = [0]
+
+    def later():
+        moved[0] += proberapi.PROOF_VERIFY_SPACING_SECONDS
+        return datetime.now(timezone.utc) + timedelta(seconds=moved[0])
+
+    monkeypatch.setattr(proberapi_routes, "_now", later)
 
     theirs = db.connect(str(tmp_path / "theirs.db"))
     for module in (db, authz, proberproofs):
@@ -676,6 +687,7 @@ def test_the_route_answers_the_token_our_api_made(client, monkeypatch):
     ((401, {"error": "unknown_key"}), 502, "unknown_key"),
     ((400, {"error": "malformed_request"}), 502, "malformed_request"),
     ((0, OSError("no route")), 502, "no_answer"),
+    ((429, {"error": "over_instance_pace"}), 502, "over_instance_pace"),
 ])
 def test_a_start_our_api_refused_says_which_side_and_its_class(client, monkeypatch,
                                                                answer, status, code):
@@ -707,6 +719,25 @@ def test_a_verify_our_api_refused_says_which_side_and_its_class(client, monkeypa
     assert body == {"ok": False, "code": "address_held", "refused_by": "prober_api",
                     "detail": f"{ADDRESS} not proved with the probers: another account"
                               " holds a live proof of this address"}
+
+
+
+def test_a_verify_our_api_paced_is_said_in_words(client, monkeypatch):
+    """Our API reads one challenge at most once every few seconds and caps
+    an instance's proofs by the hour. The window says so in words."""
+    opener = Scripted((201, {"id": 41, "address": ADDRESS, "method": "http-token",
+                             "token": "whpa_" + "d" * 64}),
+                      (429, {"error": "over_instance_pace"}))
+    with_prober_lines(monkeypatch, opener)
+    add_address_host(client)
+    challenge = start(client).json()
+
+    body = verify_route(client, challenge["id"]).json()
+
+    assert body == {"ok": False, "code": "over_instance_pace", "refused_by": "prober_api",
+                    "detail": f"{ADDRESS} not proved with the probers:"
+                              f" {proberproofs.CODE_WORDS['over_instance_pace']}"}
+    assert "_" not in proberproofs.CODE_WORDS["over_instance_pace"]
 
 
 LISTED = {"proofs": [{"address": ADDRESS, "family": "v4", "method": "http_token",
@@ -775,9 +806,9 @@ def test_a_verify_refused_here_after_ours_proved_says_so(client, monkeypatch):
 
 # ============================================================ the closed sets
 
-def test_every_class_a_verify_can_end_on_is_the_registrys_or_one_of_three():
+def test_every_class_a_verify_can_end_on_is_the_registrys_or_one_of_four():
     assert proberproofs.CODES == authz.PROOF_CODES | {
-        dispatch.NO_ANSWER, "unknown_key", "malformed_request"}
+        dispatch.NO_ANSWER, "unknown_key", "malformed_request", "over_instance_pace"}
     assert proberproofs.REFUSERS == (proberproofs.PROBER_API, proberproofs.INSTANCE)
 
 

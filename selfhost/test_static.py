@@ -664,7 +664,7 @@ def test_what_the_readme_says_we_keep_is_what_the_code_keeps():
     assert proberapi.BATCH_TTL_SECONDS == 15 * 60
     assert "for thirty days" in readme
     assert proberapi.LOG_RETENTION_SECONDS == 30 * 24 * 60 * 60
-    assert "for the hour that count is used in" in readme
+    assert "for the hour those counts are used in" in readme
     assert proberapi.PACE_WINDOW_SECONDS == 60 * 60
     # Our side holds what an instance's agents prove by presence, which
     # lapses in an hour since 2026-10-20, not in an agent report's week.
@@ -676,6 +676,13 @@ def test_what_the_readme_says_we_keep_is_what_the_code_keeps():
     assert "One by DNS TXT or a token file lasts thirty days and is read again every day." in flat
     assert authz.PUBLISHED_TTL_SECONDS == 30 * 24 * 60 * 60
     assert authz.RENEWAL_EVERY_SECONDS == 24 * 60 * 60
+    # A challenge that proved nothing goes once its day is over, since
+    # 2026-10-27, by the sweep the five minute timer runs.
+    assert ("One that never proved its address is deleted within five minutes"
+            " of its 24 hours") in flat
+    assert authz.CHALLENGE_TTL_SECONDS == 24 * 60 * 60
+    sweep = (HERE.parent / "controlplane" / "app" / "sweep_cli.py").read_text()
+    assert "authz.forget_unproved_challenges(con, now=now)" in sweep
     assert "No port and no result" in readme
     columns = proberapi.SCHEMA.split("prober_api_log")[1].split(");")[0]
     assert "port" not in columns and "state" not in columns
@@ -726,7 +733,7 @@ def test_the_snapshots_the_readme_names_are_the_boxs_fourteen_without_batches_an
     checked and zipped (docs/record 4.444). The README says both, and this
     holds each half to the code."""
     readme = " ".join((HERE / "README.md").read_text().split())
-    assert ("A batch with its answer and the count of connections are not in a"
+    assert ("A batch with its answer and the hour's counts are not in a"
             " snapshot: each night's copy of the database is emptied of both before"
             " it is kept. Everything else in this list is also in those nightly"
             " snapshots, fourteen of them, so a thing we delete is gone from our"
@@ -744,14 +751,17 @@ def test_the_snapshots_the_readme_names_are_the_boxs_fourteen_without_batches_an
     assert timer.count("OnCalendar=") == 1 and "OnCalendar=*-*-* " in timer
     # The copy is SQLite's own backup of the whole file.
     sys.path.insert(0, str(control_plane))
-    from app import backup, proberapi
+    from app import backup, instancesignup, proberapi
     source = (control_plane / "app" / "backup.py").read_text()
     assert "source.backup(dest)" in source
-    # The two tables that are taken out, by their names in the prober API's
-    # own schema, and the third, the abuse log, is not one of them.
-    assert backup.LEFT_OUT_OF_A_SNAPSHOT == ("prober_api_batches", "prober_api_charges")
+    # The tables that are taken out, by their names in the prober API's and
+    # the open signup's own schemas, and the abuse log is not one of them.
+    assert backup.LEFT_OUT_OF_A_SNAPSHOT == ("prober_api_batches", "prober_api_charges",
+                                             "prober_api_proof_uses", "instance_signups",
+                                             "instance_signup_claims")
+    schemas = proberapi.SCHEMA + instancesignup.SCHEMA
     for table in backup.LEFT_OUT_OF_A_SNAPSHOT + ("prober_api_log",):
-        assert f"CREATE TABLE IF NOT EXISTS {table} (" in proberapi.SCHEMA
+        assert f"CREATE TABLE IF NOT EXISTS {table} (" in schemas
     # Emptied before it is checked and before it is kept: the order in `run`.
     run = source.split("def run(")[1].split("def main(")[0]
     assert (run.index("snapshot(db_path, work)") < run.index("leave_batches_out(work)")

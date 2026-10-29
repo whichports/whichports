@@ -1979,6 +1979,47 @@ def sweep(con: sqlite3.Connection, now: datetime | None = None) -> dict:
     return {"checked": len(rows), "expired": expired}
 
 
+def last_proof_made(con: sqlite3.Connection, account: str) -> str | None:
+    """When a verify last proved an address for this account, as stored, or
+    None. A proof's daily reading by the sweep is not a proof made: it
+    refreshes the authorisation and leaves the challenge alone, so the
+    challenge's own time is read. For `instancesignup.end_unused`."""
+    return con.execute(
+        "SELECT MAX(verified_at) FROM authz_challenges WHERE account = ?",
+        (account,)).fetchone()[0]
+
+
+def forget_unproved_challenges(con: sqlite3.Connection,
+                               now: datetime | None = None) -> int:
+    """Delete every instance's challenge that never proved its address once
+    its day is over. Returns how many.
+
+    A start keeps the address an instance named, and since the open signup a
+    stranger's instance can start one for any public address. One that
+    proved nothing is evidence of nothing, so it is kept for its day and no
+    longer. A proved one stays, as the record of the proof. Our own control
+    plane's challenges are not touched: they belong to a server and go with
+    it (`store.py`). The connection overwrites what it deletes
+    (`db.forget_what_is_deleted`).
+    """
+    now = _as_utc(now)
+    due = []
+    for row in con.execute(
+            "SELECT id, account, expires_at FROM authz_challenges"
+            " WHERE verified_at IS NULL"):
+        if not is_instance_account(row[1]):
+            continue
+        # Compared as times, not as text, the way the gate reads an expiry.
+        # An expiry nothing can read counts as over.
+        expires = _parse(row[2])
+        if expires is None or expires <= now:
+            due.append(row[0])
+    for challenge_id in due:
+        con.execute("DELETE FROM authz_challenges WHERE id = ?", (challenge_id,))
+    con.commit()
+    return len(due)
+
+
 # ----------------------------------------------------------------- listing
 
 def list_authorizations(con: sqlite3.Connection) -> list[sqlite3.Row]:

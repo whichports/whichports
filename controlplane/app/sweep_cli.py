@@ -24,8 +24,9 @@ import sys
 from datetime import datetime, timezone
 
 from . import (alerts, authz, channels, cli, cvesend, cvetell, db, displayname,
-               finding_alerts, hetzner, intent, notify, outbound, prober,
-               reportingagain, senders, webhook)
+               finding_alerts, hetzner, instances, instancesignup, intent,
+               notify, outbound, prober, proberapi, reportingagain, senders,
+               webhook)
 
 
 def refresh_provider(con, now, client_factory=None) -> str:
@@ -325,6 +326,9 @@ def main(argv=None) -> int:
     hetzner.init(con)
     cvetell.init(con)
     cvesend.init(con)
+    instances.init(con)
+    instancesignup.init(con)
+    proberapi.init(con)
 
     now = datetime.now(timezone.utc)
 
@@ -351,6 +355,26 @@ def main(argv=None) -> int:
     lapsed = authz.sweep(con, now=now)
     for target in lapsed["expired"]:
         print(f"lapsed: the proof for {target} has expired, so it is no longer probed")
+    # An instance's challenge that proved nothing, once its day is over. A
+    # count only: the address it named is not printed.
+    unproved = authz.forget_unproved_challenges(con, now=now)
+    if unproved:
+        print(f"proofs: {unproved} challenges that proved nothing deleted")
+
+    # The open signup's instances unused for two weeks, its waiting codes
+    # and claims past their hours, its day counts past their days, and the
+    # address of an instance revoked a month ago. Counts only: an address is
+    # never printed (app/instancesignup.py).
+    forgotten = instancesignup.sweep(con, now=now)
+    if forgotten["ended"]:
+        told = instancesignup.tell_ended(forgotten["ended"])
+        print(f"signup: {len(forgotten['ended'])} unused instances ended,"
+              f" {told} told by mail")
+    if forgotten["codes"] or forgotten["claims"] or forgotten["days"] \
+            or forgotten["contacts"]:
+        print(f"signup: {forgotten['codes']} expired codes, {forgotten['claims']}"
+              f" claims, {forgotten['days']} day counts and {forgotten['contacts']}"
+              " addresses of revoked instances deleted")
 
     result = alerts.sweep(con, now=now)
 

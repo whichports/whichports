@@ -33,6 +33,9 @@ directly.
   26.04 name `docker-buildx` too, which Compose builds with: without it,
   Compose warns that buildx is not installed and builds all the same.
 - git, for the clone and for the commit the dashboard names.
+- curl, which runs the one-line install and asks our probers for your server.
+- An email address whose mail you can read during the install: the code for
+  our probers comes to it.
 - A DNS name whose A record points at the server, and an AAAA record only if
   the server has that IPv6 address.
 - Port 443 open from the internet, so Caddy can get its certificate there.
@@ -87,6 +90,15 @@ answered once it was opened: `ufw allow 443/tcp`, or `firewall-cmd
 --add-service=https` and the same with `--permanent` to keep it across a
 reboot. Port 80 stays closed.
 
+**The installer sends our API your address.** After you type yes and your
+account is made, it sends the address and its claim, then the claim and the
+code you type, then the claim once more when the line is written. Nothing
+else about the server goes with them: no domain, no host name. Our API sees
+the address each request comes from, and holds it in memory to count
+requests, until it restarts or newer ones push it out. A run that finds a
+line in `.env` sends that line's API key once instead, to ask whether it
+still works.
+
 **Our API learns the public addresses of your servers.** Probing them requires
 it. Each agent sends them to our API after a collection, with your instance's
 proof key, so we can check that your instance holds an address before our
@@ -105,16 +117,25 @@ On an instance with no prober lines in `.env` the message is kept in its own
 database and nothing is sent. What our side keeps about an instance:
 
 - its name, and its two keys as hashes
+- if it signed up, the address its code went to, until thirty days after it
+  is revoked
+- while a signup waits, the address with a hash of its code, until the code
+  is used or its 24 hours pass, and a hash of each installer's claim, until
+  its 24 hours pass or the installer says it is done. Neither is in a
+  snapshot
 - the addresses its servers proved they hold. A proof by the agent
   lapses an hour after the agent last renewed it. One by DNS TXT or a token
   file lasts thirty days and is read again every day. Lapsed ones are kept as
   the history
 - of each proof by DNS TXT or a token file your instance starts, the address,
   the way, a hash of the token and when, and once it is proved, the token as
-  our side read it. Kept like the proofs
+  our side read it. Kept like the proofs once it is proved. One that never
+  proved its address is deleted within five minutes of its 24 hours
 - a batch of ports to probe and its answer, until your instance collects the
   answer, and never longer than fifteen minutes
-- how many connections it asked for, for the hour that count is used in
+- how many connections it asked for, how long its batches kept our probers
+  busy and how many proofs it started and verified,
+  for the hour those counts are used in
 - for thirty days, one line per day, prober and address, saying a batch
   could reach it and how many connections that was. No port and no result.
   It is what lets us answer an abuse report about our probers
@@ -122,7 +143,7 @@ database and nothing is sent. What our side keeps about an instance:
   which instance sent it and when it arrived, until we delete it. No
   address, and no name or account of the person who wrote it
 
-A batch with its answer and the count of connections are not in a snapshot:
+A batch with its answer and the hour's counts are not in a snapshot:
 each night's copy of the database is emptied of both before it is kept.
 Everything else in this list is also in those nightly snapshots, fourteen of
 them, so a thing we delete is gone from our server fourteen nights later. Two
@@ -151,8 +172,8 @@ container is given the Docker socket.
 
 ## Install
 
-On the server, with Docker, its Compose plugin and git installed, and your
-domain's A record pointing at the server. On Ubuntu 26.04 the packages are:
+On the server, with Docker, its Compose plugin, git and curl installed, and
+your domain's A record pointing at the server. On Ubuntu 26.04 the packages are:
 
 ```
 sudo apt install docker.io docker-compose-v2 docker-buildx git
@@ -170,21 +191,35 @@ Then the install. It runs as root and installs to `/opt/whichports`:
 curl --proto '=https' --tlsv1.2 -fsSL https://get.whichports.com/selfhost.sh | sudo sh
 ```
 
-It asks four things: your domain, your invitation, which is one line, an
-email address and a password for your account. Each answer is checked before
-anything is changed. Then it says what it will do with them, the host of our
-probers among them, and goes on only when you type yes. Then it clones
+It asks three things: your domain, an email address and a password for your
+account. Each answer is checked before anything is changed. Then it says what
+it will do with them, what goes to our probers among them, and goes on only
+when you type yes. Then it clones
 the repository into `/opt/whichports`, writes `/opt/whichports/selfhost/.env`
 readable by root only, builds and starts the stack, waits until the control
 plane and Caddy read `healthy` and no container restarts for ten seconds, and
-makes your account. Open `https://<your domain>/`
-and sign in. The commands in the rest of this file run in
-`/opt/whichports/selfhost`.
+makes your account. What Docker prints while it builds and starts the stack
+goes to `/opt/whichports/selfhost/install.log`, readable by root only, and the
+installer shows it when a step fails.
+
+Then it asks our probers for your server. It sends our API your address and
+a claim, 32 random bytes it keeps in `/opt/whichports/selfhost/.prober-claim`
+readable by root only, and our API mails that address eight digits. Type them
+at the installer. It writes the line our API answers into `.env` and starts
+the stack again with it. Press Enter instead, and the install goes on without
+our probers, and each port's view from outside reads `not tested`. While
+signup for our probers is closed, the installer says so and the install goes
+on without them, the same way. Open `https://<your domain>/` and sign in. The commands in the rest of this file
+run in `/opt/whichports/selfhost`.
 
 Run again, it changes nothing it does not have to: it uses the folder it
 made, leaves an `.env` that holds the same answers, and makes no second
-account. When `.env` holds anything else, edited by hand or written with
-other answers, it stops before changing anything and says so. Before it asks
+account. With our probers' line in `.env`, it asks our API once, with the
+line's API key, whether the line still works, and when our API no longer
+knows it, empties it and signs up again. Within a day of a signup with the
+same address it asks for the code again, and no new mail goes. When `.env` holds anything else, edited
+by hand or written with other answers, it stops before changing anything and
+says so. Before it asks
 anything, it stops when another program holds port 443 or 8410, or when a
 stack named whichports runs from another folder. It also stops
 when anybody but root owns or may write any part of `/opt/whichports`, or
@@ -204,10 +239,11 @@ cp env.example .env
 chmod 600 .env
 ```
 
-Edit `.env`. `WHICHPORTS_DOMAIN` is the one line you must set. Your
-invitation is one line, which goes after `WHICHPORTS_PROBER_INVITE=`. The
-file will hold your mail relay's password and both prober keys, which is why
-only you may read it.
+Edit `.env`. `WHICHPORTS_DOMAIN` is the one line you must set. An install by
+hand sends our API nothing and signs up for nothing, so it runs without our
+probers, unless we send you a line by hand, which goes after
+`WHICHPORTS_PROBER_INVITE=`. The file will hold your mail relay's password and
+both prober keys, which is why only you may read it.
 
 ```
 WHICHPORTS_COMMIT=$(git rev-parse --short=12 HEAD) docker compose up -d --build
@@ -405,7 +441,7 @@ All in `selfhost/.env`. `env.example` lists them with what each is for.
 | `COMPOSE_PROFILES` | `caddy` runs our Caddy. Remove the line for your own proxy | `caddy` |
 | `WHICHPORTS_HTTPS_PORT` | Where Caddy listens on the server. Another port only where something forwards 443 to it as it is | 443 |
 | `WHICHPORTS_INGEST_PORT` | Where the control plane listens on `127.0.0.1` | 8410 |
-| `WHICHPORTS_PROBER_INVITE` | Our probers: your invitation, one line that starts with `whpinvite1_` | empty |
+| `WHICHPORTS_PROBER_INVITE` | Our probers: your invite line, which starts with `whpinvite1_` | empty |
 | `WHICHPORTS_PROBER_API`, `WHICHPORTS_PROBER_API_KEY`, `WHICHPORTS_PROBER_PROOF_KEY` | Our probers as three lines, the way an invitation used to come. All three or none, and none beside the invite line | empty |
 | `WHICHPORTS_ALERT_TO` and the `WHICHPORTS_SMTP_*` lines | Alert mail. Without a recipient nothing is sent | empty |
 | `WHICHPORTS_ALERTS_TO_PRIVATE_ADDRESSES` | `yes` lets an alert go to a private address. Any other value stops the stack at start | not set |
@@ -474,7 +510,7 @@ The folder you installed from stays, `/opt/whichports` for the one-line
 install, and so does its `.env` with both keys. Last, write to
 hello@whichports.com and ask us to end your instance. Then both its keys and
 every proof it made end at once, and no agent and no `.env` can use them
-again. There is no undo: an instance that comes back gets a new invitation.
+again. There is no undo: running the install again signs up for a new one.
 
 ## The images
 

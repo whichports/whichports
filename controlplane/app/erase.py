@@ -13,7 +13,8 @@ and that we delete them when asked. `users_cli disable` keeps every row and
   Google or Microsoft sign-ins and a sign-in being connected to it.
 - Links that work once: made for it, mailed to its address, sent by it as an
   invitation, and every invitation into its workspace.
-- The beta list row with the same address.
+- The beta list row with the same address, and the open signup's waiting
+  code and claims with it.
 - Its workspace: the row, its alert destinations, what went out and what a
   relay refused, its CVE messages, its Hetzner tokens with what they read,
   and the Feedback messages sent from it.
@@ -90,6 +91,11 @@ ACCOUNT_TABLES = (
     ("one_time_links", "user_id = :user_id OR email = :email"
                        " OR invited_by = :email OR workspace_id = :workspace_id"),
     ("beta_signups", "email = :email"),
+    # The open signup's waiting code and each installer's claim, a day at
+    # most (app/instancesignup.py). The instance a code made stays, with
+    # the other instances, below.
+    ("instance_signup_claims", "email = :email"),
+    ("instance_signups", "email = :email"),
 )
 
 WORKSPACE_TABLES = (
@@ -120,9 +126,14 @@ OWNER_TABLES = (
 # beside its own (`app/proberproofs.py`). The row goes with its challenge.
 PROBER_CHALLENGES = "prober_challenges"
 
+# Our API counts the proofs an instance starts and verifies for the hour,
+# one row per challenge (`app/proberapi.py`). Found by the same numbers, it
+# goes with them too.
+PROBER_PROOF_USES = "prober_api_proof_uses"
+
 ERASED_TABLES = frozenset(
     [table for table, _where in store.HOST_TABLES]
-    + list(authz.WORKSPACE_PROOF_TABLES) + [PROBER_CHALLENGES]
+    + list(authz.WORKSPACE_PROOF_TABLES) + [PROBER_CHALLENGES, PROBER_PROOF_USES]
     + [table for table, _where in ACCOUNT_TABLES + WORKSPACE_TABLES + OWNER_TABLES])
 
 # Every table that stays, and why. None of them names an account, a workspace
@@ -143,6 +154,8 @@ LEFT = {
                       " day, kept thirty days",
     "prober_api_proofs": "on a self-hosted instance, the proofs our API last"
                          " listed for it, replaced whole at every batch",
+    "instance_signup_days": "the open signup's counts of a day, with no"
+                            " address, kept two days",
     "sweep_state": "one row, when the sweep last ran",
     "vantages": "our probers",
     "vantage_addresses": "our probers' addresses",
@@ -261,10 +274,12 @@ def _delete(con: sqlite3.Connection, present: set[str], values: dict) -> dict:
     # The challenge numbers first: the rows kept beside them are found by
     # them, and the next step deletes the challenges.
     if set(authz.WORKSPACE_PROOF_TABLES) <= present:
-        if PROBER_CHALLENGES in present:
+        for beside in (PROBER_CHALLENGES, PROBER_PROOF_USES):
+            if beside not in present:
+                continue
             for challenge_id in authz.workspace_challenge_ids(con, workspace_id):
-                add(PROBER_CHALLENGES, con.execute(
-                    f"DELETE FROM {PROBER_CHALLENGES} WHERE challenge_id = ?",
+                add(beside, con.execute(
+                    f"DELETE FROM {beside} WHERE challenge_id = ?",
                     (challenge_id,)).rowcount)
         for table, n in authz.erase_workspace_proofs(con, workspace_id).items():
             add(table, n)

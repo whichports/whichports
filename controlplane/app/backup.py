@@ -59,11 +59,15 @@ STAMP = "%Y%m%dT%H%M%SZ"
 GROUP_ENV = "WHICHPORTS_SNAPSHOT_GROUP"
 
 
-# The prober API's tables whose rows never ride into a snapshot. Its third
-# table, `prober_api_log`, does. Written here by name and not imported, so
-# this file needs nothing but the standard library, and a test holds the
-# names to the prober API's own schema.
-LEFT_OUT_OF_A_SNAPSHOT = ("prober_api_batches", "prober_api_charges")
+# The tables whose rows never ride into a snapshot: the prober API's queued
+# batches, the hour's charges and the hour's proof counts, and since
+# 2026-10-26 the open signup's waiting codes and its claims, each an address
+# and a hash for a day at most, and eight digits under SHA-256 are worked
+# out from a copy in seconds (app/instancesignup.py). The prober API's log,
+# `prober_api_log`, does ride. Written here by name and not imported, so this file needs
+# nothing but the standard library, and a test holds the names to the
+# schemas.
+LEFT_OUT_OF_A_SNAPSHOT = ("prober_api_batches", "prober_api_charges", "prober_api_proof_uses", "instance_signups", "instance_signup_claims")
 
 
 class BackupFailed(Exception):

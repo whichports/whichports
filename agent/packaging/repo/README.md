@@ -6,7 +6,8 @@ container; the server only ever serves already-signed files.
 
 ## Publishing (the owner, from the Mac)
 
-One command does everything, version bump and tag included:
+One command does it, version bump and tag included, once the release is in
+the public repository (below):
 
 ```sh
 git pull && cd agent && bash ops/publish.sh
@@ -20,6 +21,19 @@ without the keychain entry it prompts. The make targets underneath
 (`package-signed`, `repo`) still work standalone for debugging, key handling
 in ../signing/README.md. The tree lands in `/srv/get.whichports.com` on the
 prod box, owned by deploy, served read-only.
+
+The tree also holds `selfhost.sh`, the self-hosted installer that
+`selfhost/README.md` gives as its one line. It is `selfhost/install.sh` with
+the release's tag and the commit that tag names in the public repository
+filled in by `selfhost/release_installer.py`, because on a server it clones
+the public repository and builds that commit and nothing else. So the release
+is in the public repository first: this commit exported into the owner's
+clone of it, tagged with the same version, and pushed. Before anything is
+tagged, `ops/require-public-release.sh` checks the clone and the public
+repository agree on the tag and hold this commit's `agent/`, `selfhost/` and
+`controlplane/app/`, and when they do not it says the commands that make the
+release. The clone is `~/whichports-public`, or the folder
+`WHICHPORTS_PUBLIC` names.
 
 ## Serving it (Caddy on the prod box, one-time)
 

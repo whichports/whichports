@@ -8,12 +8,13 @@ same answers as for something that does not exist. And every refusal is one
 word from the closed set, never a sentence (SI-8).
 """
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import (authz, db, dispatch, dnstxt, ingest, instances, prober,
-                 proberapi, proberapi_worker, vantages)
+                 proberapi, proberapi_routes, proberapi_worker, vantages)
 
 from test_proberapi_worker import Far, their_snapshot
 
@@ -350,7 +351,7 @@ def test_proofs_lists_this_instances_own_and_no_one_elses(box):
     assert theirs == {"proofs": []}
 
 
-def test_a_dns_proof_is_started_and_verified_for_this_instance_only(box, monkeypatch):
+def test_a_dns_proof_is_started_and_verified_for_this_instance_only(box, clock, monkeypatch):
     client, issued, path = box
     started = client.post(f"{P}/proofs/challenges", headers=key(issued["one"]),
                           content=json.dumps({"address": V4, "method": "dns-txt"}))
@@ -369,6 +370,7 @@ def test_a_dns_proof_is_started_and_verified_for_this_instance_only(box, monkeyp
     assert missing.json() == {"proved": False, "result": "token_not_found"}
 
     monkeypatch.setattr(dnstxt, "query_txt", lambda name: [challenge["token"]])
+    clock[0] += timedelta(seconds=proberapi.PROOF_VERIFY_SPACING_SECONDS)
     proved = client.post(f"{P}/proofs/challenges/{challenge['id']}/verify",
                          headers=key(issued["one"]))
     assert proved.json() == {"proved": True, "result": "proved"}
@@ -416,6 +418,174 @@ def test_revoking_an_address_ends_this_instances_proof_only(box):
     assert proofs_of(path, issued["two"]) == [OTHER_V4]
     assert_refused(client.delete(f"{P}/proofs/10.0.0.1", headers=key(issued["one"])),
                    "target_refused")
+
+
+# ===================================================== proofs are paced
+#
+# Since the open signup a stranger can hold an API key, and every start and
+# every verify of a proof makes our side do something: a row, or a read of a
+# DNS record or of a file at an address the instance names. So both are
+# counted per instance and per hour, like the connects, and one challenge is
+# read at most once every few seconds. Every instance is held to the same
+# numbers, invited or signed up.
+
+def addresses(count, third=0):
+    return [f"185.199.{third + n // 200}.{n % 200 + 1}" for n in range(count)]
+
+
+@pytest.fixture()
+def clock(monkeypatch):
+    """The routes' clock, moved by hand."""
+    now = [datetime(2026, 11, 2, 9, 0, tzinfo=timezone.utc)]
+    monkeypatch.setattr(proberapi_routes, "_now", lambda: now[0])
+    return now
+
+
+def start_proof(client, issued, address, method="dns-txt"):
+    return client.post(f"{P}/proofs/challenges", headers=key(issued),
+                       content=json.dumps({"address": address, "method": method}))
+
+
+def verify_proof(client, issued, challenge_id):
+    return client.post(f"{P}/proofs/challenges/{challenge_id}/verify",
+                       headers=key(issued))
+
+
+def assert_paced(response):
+    assert_refused(response, "over_instance_pace")
+    assert int(response.headers["retry-after"]) >= 1
+
+
+def instance_of(path, name, origin):
+    con = db.connect(path)
+    try:
+        return instances.add(con, name, origin=origin)
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize("origin", [authz.ORIGIN_INVITED, authz.ORIGIN_SIGNUP])
+def test_proof_starts_are_capped_per_instance_per_hour(box, clock, origin):
+    client, issued, path = box
+    mine = instance_of(path, "paced", origin)
+    for address in addresses(proberapi.PROOF_STARTS_PER_HOUR):
+        assert start_proof(client, mine, address).status_code == 201
+    assert_paced(start_proof(client, mine, addresses(1, third=50)[0]))
+    # Another instance is not held by this one's count.
+    assert start_proof(client, issued["two"], addresses(1, third=51)[0]).status_code == 201
+    clock[0] += timedelta(hours=1, seconds=1)
+    assert start_proof(client, mine, addresses(1, third=52)[0]).status_code == 201
+
+
+def test_an_honest_instance_proves_a_few_dozen_addresses_in_an_hour():
+    """The numbers leave room for an instance proving forty addresses, each
+    started once and verified a few times."""
+    assert proberapi.PROOF_STARTS_PER_HOUR >= 40
+    assert proberapi.PROOF_VERIFIES_PER_HOUR >= 40 * 4
+    assert 1 <= proberapi.PROOF_VERIFY_SPACING_SECONDS <= 10
+
+
+@pytest.mark.parametrize("origin", [authz.ORIGIN_INVITED, authz.ORIGIN_SIGNUP])
+def test_proof_reads_are_capped_per_instance_per_hour(box, clock, monkeypatch, origin):
+    client, _issued, path = box
+    mine = instance_of(path, "paced", origin)
+    reads = []
+    monkeypatch.setattr(dnstxt, "query_txt", lambda name: reads.append(name) or [])
+    challenge = start_proof(client, mine, V4).json()
+    for _ in range(proberapi.PROOF_VERIFIES_PER_HOUR):
+        clock[0] += timedelta(seconds=proberapi.PROOF_VERIFY_SPACING_SECONDS)
+        assert verify_proof(client, mine, challenge["id"]).json() == {
+            "proved": False, "result": "token_not_found"}
+    clock[0] += timedelta(seconds=proberapi.PROOF_VERIFY_SPACING_SECONDS)
+    assert_paced(verify_proof(client, mine, challenge["id"]))
+    assert len(reads) == proberapi.PROOF_VERIFIES_PER_HOUR
+
+
+def test_one_challenge_is_read_at_most_once_every_few_seconds(box, clock, monkeypatch):
+    client, issued, _path = box
+    reads = []
+    monkeypatch.setattr(dnstxt, "query_txt", lambda name: reads.append(name) or [])
+    first = start_proof(client, issued["one"], V4).json()
+    second = start_proof(client, issued["one"], OTHER_V4).json()
+    assert verify_proof(client, issued["one"], first["id"]).json()["result"] == "token_not_found"
+    clock[0] += timedelta(seconds=1)
+    assert_paced(verify_proof(client, issued["one"], first["id"]))
+    # Another challenge of the same instance is read at once.
+    assert verify_proof(client, issued["one"], second["id"]).json()["result"] == "token_not_found"
+    assert len(reads) == 2
+    clock[0] += timedelta(seconds=proberapi.PROOF_VERIFY_SPACING_SECONDS)
+    assert verify_proof(client, issued["one"], first["id"]).json()["result"] == "token_not_found"
+    assert len(reads) == 3
+
+
+def test_a_verify_of_a_challenge_that_is_not_ones_own_spends_nothing(box, clock):
+    client, issued, path = box
+    for _ in range(proberapi.PROOF_VERIFIES_PER_HOUR + 1):
+        assert_refused(verify_proof(client, issued["one"], 999), "unknown_challenge")
+    con = db.connect(path)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM prober_api_proof_uses").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_the_hours_proof_counts_go_with_the_hour(box, clock, monkeypatch):
+    client, issued, path = box
+    monkeypatch.setattr(dnstxt, "query_txt", lambda name: [])
+    challenge = start_proof(client, issued["one"], V4).json()
+    verify_proof(client, issued["one"], challenge["id"])
+    con = db.connect(path)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM prober_api_proof_uses").fetchone()[0] == 2
+        proberapi.sweep(con, clock[0] + timedelta(hours=1, seconds=1))
+        assert con.execute("SELECT COUNT(*) FROM prober_api_proof_uses").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+# ======================================= a challenge that proved nothing
+#
+# A start keeps the address the instance named. One that never proved it is
+# kept for its day and no longer: the sweep deletes it once its day is over,
+# for every instance. A proved one stays, as the record of the proof.
+
+def test_an_instances_expired_challenge_that_proved_nothing_is_deleted(box, clock, monkeypatch):
+    client, issued, path = box
+    unproved = start_proof(client, issued["one"], V4).json()
+    proved = start_proof(client, issued["two"], OTHER_V4).json()
+    monkeypatch.setattr(dnstxt, "query_txt", lambda name: [proved["token"]])
+    assert verify_proof(client, issued["two"], proved["id"]).json()["proved"] is True
+    con = db.connect(path)
+    try:
+        # Our own control plane's challenge is not an instance's: it stays.
+        ours = authz.start_proof(con, "185.199.111.1", authz.METHOD_DNS_TXT, now=clock[0])
+        assert authz.forget_unproved_challenges(con, clock[0] + timedelta(hours=23)) == 0
+        assert authz.forget_unproved_challenges(
+            con, clock[0] + timedelta(seconds=authz.CHALLENGE_TTL_SECONDS + 1)) == 1
+        left = {row["id"] for row in authz.list_challenges(con)}
+    finally:
+        con.close()
+    assert unproved["id"] not in left
+    assert {proved["id"], ours.id} <= left
+
+
+def test_the_sweep_deletes_an_instances_challenge_that_proved_nothing(box, capsys):
+    _client, issued, path = box
+    long_ago = datetime.now(timezone.utc) - timedelta(days=2)
+    con = db.connect(path)
+    try:
+        challenge = authz.start_proof(con, V4, authz.METHOD_DNS_TXT,
+                                      account=issued["one"].instance.account, now=long_ago)
+    finally:
+        con.close()
+    from app import sweep_cli
+    assert sweep_cli.main([]) == 0
+    con = db.connect(path)
+    try:
+        assert challenge.id not in {row["id"] for row in authz.list_challenges(con)}
+    finally:
+        con.close()
+    assert "1 challenges that proved nothing deleted" in capsys.readouterr().out
 
 
 # ======================= what stops our probers on an instance's address

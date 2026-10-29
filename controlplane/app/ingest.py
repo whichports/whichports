@@ -31,6 +31,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 from . import (accounts, alerts, authz, betasignup_routes, channels, cvedismiss, db, dispatch,
+               instancesignup_routes,
                displayname, feedback_routes, finding_alerts,
                hetzner, intent, join, journal, metrics, notify, prober,
                proberapi_routes, proberproofs,
@@ -2620,6 +2621,10 @@ app.include_router(feedback_routes.build_router(require_operator, operator_works
 # address is configured (app/betasignup.py), so a self-hosted instance never
 # collects anybody's address.
 app.include_router(betasignup_routes.build_router(_peer_is_loopback))
+# The open signup's routes, which the self-hosted installer calls
+# (app/instancesignup_routes.py), off on the same setting, so a self-hosted
+# instance never takes a signup.
+app.include_router(instancesignup_routes.build_router(_peer_is_loopback))
 
 
 def parse_envelope(body: bytes) -> dict:

@@ -292,6 +292,7 @@ ACCOUNT_LINK_LASTS = "24 hours"
 RESET_LINK_LASTS = "30 minutes"
 CONFIRM_LINK_LASTS = "24 hours"
 INVITE_LINK_LASTS = "7 days"
+SIGNUP_CODE_LASTS = "24 hours"
 
 
 def format_account(email: str, link: str,
@@ -371,6 +372,60 @@ def format_invite(inviter: str, inviter_email: str, workspace: str,
         f"The link works once and for {how_long}.\n"
     )
     return subject, body, mailhtml.invite(inviter, inviter_email, workspace, role, link, how_long)
+
+
+def format_signup_code(code: str, how_long: str = SIGNUP_CODE_LASTS) -> tuple[str, str, str]:
+    """The open signup's one mail to the person (app/instancesignup.py): the
+    eight digits the installer asks for, in one line. No link and no button,
+    so nothing in it can be clicked, forwarded into a collect or opened by
+    a scanner, and no key and no name of anything."""
+    subject = "[whichports] Your code"
+    body = f"Your code is {code}. It works for {how_long}.\n"
+    return subject, body, mailhtml.signup_code(code, how_long)
+
+
+def format_signup_ended(link: str, days: int) -> tuple[str, str, str]:
+    """To the address of a signup instance the sweep ended for sending no
+    batch and making no proof (app/instancesignup.py). What happened in one
+    line, and one button to the install, which signs up again. No key and no
+    name of anything."""
+    subject = "[whichports] Your instance ended"
+    body = (f"Your instance sent no batch and made no proof for {days} days, so it ended.\n"
+            f"Running the install again gives you a new one:\n"
+            f"\n"
+            f"  {link}\n")
+    return subject, body, mailhtml.signup_ended(link, days)
+
+
+def format_signup_made(live: int) -> tuple[str, str]:
+    """To the owner: an instance signed up. How many are live, and nothing
+    of whose it is."""
+    subject = "[whichports] An instance signed up"
+    body = ("An instance signed up.\n"
+            "\n"
+            f"  live signup instances:  {live}\n")
+    return subject, body
+
+
+def format_signup_full(signups: int, made: int, live: int,
+                       today_only: bool = True) -> tuple[str, str]:
+    """To the owner, once a day at most: signup answers full.
+
+    `today_only` is False when the cap spent is the one on live signup
+    instances. That one clears when an instance is revoked, not at midnight,
+    so the mail must not say tomorrow."""
+    if today_only:
+        subject = "[whichports] Signup is full today"
+        said = "Signup answers full until tomorrow.\n"
+    else:
+        subject = "[whichports] Signup is full"
+        said = "Signup answers full until a signup instance is revoked.\n"
+    body = (said +
+            "\n"
+            f"  signups today:           {signups}\n"
+            f"  instances made today:    {made}\n"
+            f"  live signup instances:   {live}\n")
+    return subject, body
 
 
 def send(subject: str, body: str, config: Config | None = None,

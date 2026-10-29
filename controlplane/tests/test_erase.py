@@ -435,6 +435,22 @@ def refused(con, capsys, *argv):
     return lines[0]
 
 
+def test_a_waiting_signup_code_and_its_claims_with_the_address_go(con, world, monkeypatch):
+    """The open signup keeps an address with a hash of its code and of each
+    installer's claim for a day (app/instancesignup.py). Like the beta list
+    row, they are rows about this person, and go. Another address's stay."""
+    from datetime import datetime, timezone
+    from app import instancesignup
+    monkeypatch.setenv(instancesignup.MODE_ENV, "open")
+    now = datetime.now(timezone.utc)
+    for address, claim in ((GONE, "a1" * 32), (GONE, "b2" * 32), (KEPT, "c3" * 32)):
+        assert instancesignup.request_code(con, address, claim, now).answer == "sent"
+    assert run(con, GONE, "--yes") == 0
+    for table in ("instance_signups", "instance_signup_claims"):
+        left = {row[0] for row in con.execute(f"SELECT email FROM {table}")}
+        assert GONE not in left and KEPT in left, (table, left)
+
+
 def test_refuses_an_address_with_no_account(con, world, capsys):
     line = refused(con, capsys, "nobody@example.com", "--yes")
     assert line == "no account for nobody@example.com, nothing was changed"

@@ -16,6 +16,12 @@
 # Without a keychain entry the script asks, once per run: the passphrase is
 # what keeps a stolen laptop from signing packages the fleet trusts, so it is
 # needed at every signing, and the keychain is the thing that remembers it.
+#
+# The tree it sends also holds selfhost.sh, the self-hosted installer, stamped
+# with this release's tag and the commit that tag names in the public
+# repository. So the release has to be there first, exported, tagged and
+# pushed by hand. ops/require-public-release.sh checks that
+# before anything is tagged here, and says the three commands when it is not.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -28,10 +34,15 @@ KEY_ID="hello@whichports.com"
 HOST="${WHICHPORTS_HOST:-whichports}"
 DEST="$HOST:/srv/get.whichports.com/"
 BASE="https://get.whichports.com"
+# The owner's clone of the public repository, the one the export's updates go
+# into (docs/record 4.400, made new on 28 October as 4.471 says). WHICHPORTS_PUBLIC names another for a single run,
+# and one set and empty falls back to it.
+PUBLIC="${WHICHPORTS_PUBLIC:-$HOME/whichports-public}"
 
 command -v docker >/dev/null 2>&1 || { echo "docker not found (repo metadata builds in a container)" >&2; exit 1; }
 docker info >/dev/null 2>&1 || { echo "docker daemon not running - start Docker Desktop first" >&2; exit 1; }
 command -v nfpm >/dev/null 2>&1 || { echo "nfpm not found: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found (it stamps the self-hosted installer)" >&2; exit 1; }
 
 # Publish only a committed state: the tag below points at the current commit, so
 # the tree must be on main with no uncommitted changes to tracked files. The
@@ -40,6 +51,7 @@ command -v nfpm >/dev/null 2>&1 || { echo "nfpm not found: go install github.com
 # which was making a clean publish impossible (docs/RECORD.md, 2026-08-15).
 sh ops/require-clean-main.sh
 
+NEW_TAG=no
 if TAG="$(git describe --tags --exact-match --match 'v*' 2>/dev/null)"; then
   echo "current commit is already $TAG - republishing that version"
 else
@@ -48,6 +60,16 @@ else
   MAJ="${BASEVER%%.*}"; REST="${BASEVER#*.}"
   MIN="${REST%%.*}"; PATCH="${REST#*.}"
   TAG="v$MAJ.$MIN.$((PATCH + 1))"
+  NEW_TAG=yes
+fi
+
+# The release must be in the public repository under the same tag, as this
+# commit's export, before this commit is tagged: a refusal here leaves no tag
+# behind and builds nothing.
+echo "* checking the public repository has $TAG"
+sh ops/require-public-release.sh "$PUBLIC" "$TAG"
+
+if [ "$NEW_TAG" = yes ]; then
   echo "tagging $TAG (previous was $LAST)"
   git tag "$TAG"
   git push origin "$TAG"
@@ -79,6 +101,13 @@ SIGNING_KEY_FILE="$TMPKEY" NFPM_PASSPHRASE="$PASS" make package-signed
 echo "* building signed repository tree"
 SIGNING_KEY_FILE="$TMPKEY" REPO_GPG_PASSPHRASE="$PASS" make repo
 
+# The self-hosted installer, served as $BASE/selfhost.sh: the tag's own
+# install.sh, read in the public repository's clone, with the tag and its
+# commit there filled in. `make repo` empties the tree first, so it is
+# written after it, and the rights below are given to it with the rest.
+echo "* stamping the self-hosted installer with $TAG"
+python3 ../selfhost/release_installer.py --repository "$PUBLIC" "$TAG" > dist-repo/selfhost.sh
+
 # The web server on the box reads the tree as a user of its own, so every
 # folder must be 755 and every file 644, whatever the umask of the terminal
 # this runs in. `make repo` makes dist-repo with mkdir, which takes the umask:
@@ -99,7 +128,7 @@ rsync -a --delete dist-repo/ "$DEST"
 # which is what the folder's rights did on 13 October.
 live_check() {
   failed=0
-  for path in / /whichports-signing-public.asc /deb/dists/stable/InRelease /rpm/repodata/repomd.xml; do
+  for path in / /whichports-signing-public.asc /deb/dists/stable/InRelease /rpm/repodata/repomd.xml /selfhost.sh; do
     code="$(curl -sS -o /dev/null -w '%{http_code}' "$BASE$path" 2>/dev/null)" || code=""
     case "$code" in
       200) echo "  ok  $BASE$path" ;;

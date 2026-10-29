@@ -1,5 +1,11 @@
-# Settings and secrets of a running instance
+# Settings and secrets of a running instance, the claim the installer
+# keeps while it signs up for our probers, and its log of what Docker
+# printed while it built and started the stack
 .env
+.env.*
+.prober-claim
+.prober-claim.*
+install.log
 
 # Python
 .venv/

@@ -28,13 +28,16 @@ Where the two disagree, the dashboard names the layer and quotes the rule.
 
 ## The beta
 
-whichports is in a private beta, by invitation. You run the control plane and
-the dashboard on a server of your own, so what your agents read stays with
-you. The view from outside comes from our probers, which your instance asks
-through an API, with keys that come with an invitation. `selfhost/README.md`
-says what our side learns when it does.
+whichports is in beta. You run the control plane and the dashboard on a server
+of your own, so what your agents read stays with you. The view from outside
+comes from our probers, which your instance asks through an API. The installer
+asks your address, and once your account is made our API mails it a code.
+Type it at the installer and your instance has its keys, with nothing to copy.
+While signup for our probers is closed, the installer says so, and the install
+finishes without them: each port's view from outside reads `not tested`.
+`selfhost/README.md` says what our side learns.
 
-To ask for an invitation, or about anything here: hello@whichports.com.
+About anything here: hello@whichports.com.
 
 ## Licence
 

@@ -209,6 +209,9 @@ def _start_challenge(request: Request, payload) -> JSONResponse:
                 method != authz.METHOD_HTTP_TOKEN or not isinstance(named, str)
                 or not authz.TOKEN_SHAPE.fullmatch(named)):
             raise proberapi.Refused("malformed_request")
+        # Counted before anything is made, for every instance alike
+        # (`proberapi.PROOF_STARTS_PER_HOUR`).
+        proberapi.charge_proof(con, instance.id, proberapi.PROOF_START, _now())
         try:
             challenge = authz.start_proof(con, address, method,
                                           account=instance.account, now=_now(),
@@ -232,7 +235,13 @@ def _verify_challenge(request: Request, challenge_id: int) -> JSONResponse:
         instance = _instance(con, request, instances.KIND_API)
         if authz.challenge_for_account(con, challenge_id, instance.account) is None:
             raise proberapi.Refused("unknown_challenge")
-        result = authz.verify_proof(con, challenge_id, now=_now())
+        # Counted before anything is read: our side reads a DNS record or a
+        # file at the address, so an instance reads one challenge at most
+        # once every few seconds and only so many in an hour.
+        now = _now()
+        proberapi.charge_proof(con, instance.id, proberapi.PROOF_VERIFY, now,
+                               challenge_id=challenge_id)
+        result = authz.verify_proof(con, challenge_id, now=now)
     finally:
         con.close()
     # SI-8: the class and nothing else. The registry's sentence names the

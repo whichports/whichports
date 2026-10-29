@@ -3,12 +3,13 @@
 import gzip
 import json
 import sqlite3
+import struct
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from app import authz, backup, db, instances, proberapi, store, vantages
+from app import authz, backup, db, instances, instancesignup, proberapi, store, vantages
 
 NOW = datetime(2026, 8, 14, 3, 0, 0, tzinfo=timezone.utc)
 
@@ -335,6 +336,31 @@ def test_a_snapshot_holds_no_batch_and_no_hours_count_as_rows_or_as_bytes(api_db
     assert found == {"batches": 0, "charges": 0, "request bytes": 0, "answer bytes": 0}
 
 
+def test_lock_seconds_left_out_of_the_snapshot(live_db, tmp_path):
+    """The seconds a batch held the pass lock are written on its charge row,
+    so they leave the copy with the hour's count, and a number no other
+    column holds is in the live file and not in the snapshot."""
+    con = serve_the_prober_api(live_db)
+    try:
+        answered = con.execute("SELECT batch_id FROM prober_api_charges"
+                               " WHERE batch_id IS NOT NULL").fetchall()
+        assert answered
+        for (batch_id,) in answered:
+            assert proberapi.charge_lock_seconds(con, batch_id, 1234.5)
+        held = con.execute("SELECT COUNT(*) FROM prober_api_charges"
+                           " WHERE lock_seconds = 1234.5").fetchone()[0]
+    finally:
+        con.close()
+    assert held == len(answered)
+    # SQLite keeps a REAL as eight bytes, big-endian.
+    seconds_bytes = struct.pack(">d", 1234.5)
+    assert times_in(live_db, seconds_bytes) >= 1
+    result = backup.run(live_db, tmp_path / "backups", keep=14, now=NOW)
+    restored = unpacked(result, tmp_path)
+    assert table_rows(restored, "prober_api_charges") == []
+    assert times_in(restored, seconds_bytes) == 0
+
+
 def test_a_batch_still_in_the_live_wal_is_not_in_the_snapshot_either(live_db, tmp_path):
     """The worker keeps a connection open on the box, so what was written
     last is in the -wal beside the database and not yet in its file. The copy
@@ -434,7 +460,8 @@ def test_a_snapshot_without_batches_passes_the_check_and_the_app_starts_on_it(
     for module in (db, authz, vantages, instances, proberapi):
         module.init(con)
     assert [i.name for i in instances.list_all(con)] == ["one", "two"]
-    assert proberapi.sweep(con, NOW) == {"batches": 0, "charges": 0, "log": 0}
+    assert proberapi.sweep(con, NOW) == {"batches": 0, "charges": 0, "log": 0,
+                                         "proof_uses": 0}
     for name in ("one", "two"):
         batch_id = proberapi.submit(con, instances.by_name(con, name).id, REQUEST, NOW)
         assert proberapi.fetch(con, instances.by_name(con, name).id, batch_id,
@@ -503,14 +530,54 @@ def test_a_run_whose_copy_cannot_be_emptied_leaves_no_snapshot_behind(
 
 
 def test_every_table_the_prober_api_makes_is_left_out_or_kept_on_purpose():
-    """A fourth table would ride into every snapshot without anybody having
-    decided that it may. The names are read from the prober API's own schema,
-    so the day one is added this fails until it is put on one side."""
+    """A table more would ride into every snapshot without anybody having
+    decided that it may. The names are read from the prober API's and the
+    open signup's own schemas, so the day one is added this fails until it
+    is put on one side. The signup's day counts hold no address and ride."""
     con = sqlite3.connect(":memory:")
     con.executescript(proberapi.SCHEMA)
+    con.executescript(instancesignup.SCHEMA)
     made = {row[0] for row in con.execute(
         "SELECT name FROM sqlite_schema WHERE type = 'table'")}
     con.close()
-    kept_on_purpose = {"prober_api_log"}
-    assert set(backup.LEFT_OUT_OF_A_SNAPSHOT) == {"prober_api_batches", "prober_api_charges"}
+    kept_on_purpose = {"prober_api_log", "instance_signup_days"}
+    assert set(backup.LEFT_OUT_OF_A_SNAPSHOT) == {
+        "prober_api_batches", "prober_api_charges", "prober_api_proof_uses",
+        "instance_signups", "instance_signup_claims"}
     assert made == set(backup.LEFT_OUT_OF_A_SNAPSHOT) | kept_on_purpose
+
+
+def test_claims_and_codes_are_in_no_snapshot(live_db, tmp_path, monkeypatch):
+    """A waiting code and a claim are an address and a day at most, and
+    eight digits under SHA-256 are worked out from a copy in seconds. They
+    leave the copy, as rows and as bytes, and an instance's own address
+    stays in it, as the privacy page says."""
+    monkeypatch.setenv(instancesignup.MODE_ENV, "open")
+    # One instance made and one code waiting: room for both, whatever the
+    # cap on live signup instances is.
+    monkeypatch.setattr(instancesignup, "LIVE_SIGNUP_INSTANCES", 1000)
+    made_claim, waiting_claim = "a1" * 32, "b2" * 32
+    con = db.connect(str(live_db))
+    try:
+        for module in (authz, instances, instancesignup):
+            module.init(con)
+        made = instancesignup.request_code(con, "made@example.org", made_claim, NOW)
+        assert instancesignup.collect(con, made_claim, made.code, NOW).answer == "made"
+        waiting = instancesignup.request_code(con, "waiting@example.org",
+                                              waiting_claim, NOW)
+        assert waiting.code
+        hashes = [row[0].encode() for row in con.execute(
+            "SELECT code_hash FROM instance_signups UNION ALL"
+            " SELECT claim_hash FROM instance_signup_claims")]
+    finally:
+        con.close()
+    assert len(hashes) == 3
+    assert times_in(live_db, b"waiting@example.org") >= 1
+    result = backup.run(live_db, tmp_path / "backups", keep=14, now=NOW)
+    restored = unpacked(result, tmp_path)
+    assert table_rows(restored, "instance_signups") == []
+    assert table_rows(restored, "instance_signup_claims") == []
+    assert times_in(restored, b"waiting@example.org") == 0
+    for value in hashes:
+        assert times_in(restored, value) == 0
+    assert times_in(restored, b"made@example.org") >= 1

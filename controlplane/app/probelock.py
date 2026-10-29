@@ -112,11 +112,15 @@ STRIPES_DIRECTORY = "probe.stripes"
 # thousand (4 pairs in 4096). It costs a wait, never the promise.
 STRIPES = 4096
 
-# How long a pass waits for the one before it. A pass over the whole fleet
-# takes seconds today and minutes at a thousand hosts, so half an hour means
-# something is wrong, and the timers do not queue up behind it: systemd does
-# not start a timer's service while the previous run is still active, so at
-# most one fast, one hourly and one scan can ever be waiting.
+# How long a whole pass waits for the one before it, on a self-hosted
+# instance, and how long one batch of ours waits for its finer locks on our
+# box. A pass over the whole fleet takes seconds today and minutes at a
+# thousand hosts, so half an hour means something is wrong, and the timers do
+# not queue up behind it: systemd does not start a timer's service while the
+# previous run is still active, so at most one fast, one hourly and one scan
+# can ever be waiting. On our box one pass can wait it more than once, once
+# per vantage for a busy prober and once per server for a busy address, and
+# each such batch writes its `HELD_LINE`.
 WAIT_SECONDS = 30 * 60
 
 # How often a waiting pass asks again. Coarse on purpose: a second of latency
@@ -402,14 +406,17 @@ class Locks:
     it out, for the same reason it leaves out the prober.
 
     `directory` None means there is nothing to lock, which only an in-memory
-    database produces, and `guards_nothing` says so.
+    database produces, and `guards_nothing` says so. `keep_going` is asked
+    between polls, so a worker that is told to stop does not wait out the
+    whole wait first.
     """
 
     def __init__(self, directory: str | None, *, prober: int | None = None,
                  addresses=(), pass_lock: bool = True,
                  wait_seconds: float = WAIT_SECONDS,
                  poll_seconds: float = POLL_SECONDS,
-                 clock=time.monotonic, sleep=time.sleep) -> None:
+                 clock=time.monotonic, sleep=time.sleep,
+                 keep_going=lambda: True) -> None:
         if wait_seconds < 0:
             raise ValueError("wait_seconds cannot be negative")
         if poll_seconds <= 0:
@@ -422,6 +429,7 @@ class Locks:
         self._poll = poll_seconds
         self._clock = clock
         self._sleep = sleep
+        self._keep_going = keep_going
         self._wanted = []
         if directory is not None:
             if pass_lock:
@@ -476,12 +484,16 @@ class Locks:
     def acquire(self) -> None:
         """Ask again every poll until every lock is held, for at most the
         wait. A wait that runs out raises `ProberBusy` or `AddressBusy`,
-        for the lock that was in the way last, with nothing held."""
+        for the lock that was in the way last, with nothing held. A stop
+        raises `ProbeLockHeld` at the next poll, also with nothing held."""
         started = self._clock()
         while True:
             busy = self.try_acquire()
             if busy is None:
                 return
+            if not self._keep_going():
+                raise ProbeLockHeld("stopped while waiting for the locks,"
+                                    " so this batch was not sent")
             if self._clock() - started >= self._wait:
                 if busy == BUSY_ADDRESS:
                     raise AddressBusy(

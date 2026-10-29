@@ -40,6 +40,11 @@ def _print_list(con) -> int:
         print(f"    state      {'revoked ' + instance.revoked_at if instance.revoked_at else 'live'}")
         print(f"    added      {instance.created_at}")
         print(f"    made       {instance.origin or 'not recorded'}")
+        # The address an instance that signed up keeps, for reaching whoever
+        # runs it. To this terminal only, never to a log.
+        contact = instances.contact_of(con, instance.id)
+        if contact:
+            print(f"    address    {contact}")
         for row in instances.key_rows(con, instance.id):
             state = f"revoked {row['revoked_at']}" if row["revoked_at"] else "live"
             print(f"    {row['kind']:<5} key  issued {row['created_at']}, {state}")
@@ -123,7 +128,8 @@ def run(con, args) -> int:
         if args.command == "log":
             return _print_log(con, args.address)
         if args.command == "revoke":
-            instance = instances.revoke(con, args.name)
+            instance = instances.revoke(con, args.name,
+                                        unused=getattr(args, "unused", False))
             print(f"revoked {instance.name} at {instance.revoked_at}. Both keys"
                   " and every proof it made have ended.")
             return 0
@@ -149,6 +155,11 @@ def parse_args(argv=None):
 
     p_revoke = sub.add_parser("revoke", help="end an instance, its keys and its proofs")
     p_revoke.add_argument("--name", required=True, metavar="NAME")
+    # A signup instance whose line was lost: ended the way the sweep ends
+    # an unused one, so its address may sign up again at once. Without it a
+    # revoke keeps the address out for 30 days (instances.address_taken).
+    p_revoke.add_argument("--unused", action="store_true",
+                          help="end it as unused, so its address may sign up again")
 
     p_log = sub.add_parser("log", help="who asked our probers for an address, for an abuse report")
     p_log.add_argument("--address", required=True, metavar="ADDRESS")

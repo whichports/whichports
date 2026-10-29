@@ -6,9 +6,11 @@
 
 A self-hosted whichports has no prober of its own. It asks the prober API on
 this control plane to probe its servers from probe1 and probe2
-(`app/proberapi.py`), and this file is who is allowed to ask. The private
-beta is invite only, so an instance exists because the owner added it by hand
-and for no other reason: there is no signup and no route that makes one.
+(`app/proberapi.py`), and this file is who is allowed to ask. An instance
+exists because the owner added it by hand, or, since the owner opened the
+beta on 26 October 2026, because somebody's installer signed up for one and
+they typed the code we mailed them (`app/instancesignup.py`). Nothing else
+makes one.
 
 ## Two keys per instance, and why not one
 
@@ -34,13 +36,23 @@ may do is decided by the `kind` on its row**, never by how it is spelled.
 
 **Each instance records it, since 2026-10-20** (`docs/PRODUCT.md` 5, the
 clauses of that day): `invited` when the owner added it by hand, `signup`
-when a stranger made it for themself through a signup, which is not built.
+when a stranger made it for themself through the open signup.
 Only an invited instance's agents prove by presence
 (`authz.proves_by_presence`), because presence proves a shared address for
 whoever sends from it. A signup instance proves by DNS TXT or a token file.
 `add` writes the word on every row and takes it from its caller with no
 default, and a row with any other value, or none, does not prove by
 presence.
+
+## The address of an instance that signed up
+
+An instance a stranger made through the open signup keeps the address its
+code was mailed to (`app/instancesignup.py`), in `contact_email`, and nothing
+else of theirs. It is what holds one live instance to one address, and the
+one way to reach whoever runs it when an abuse report names it. It is kept
+while the instance is live and for `CONTACT_KEPT_AFTER_REVOKE` after its
+revoke, then the sweep empties it (`forget_contacts`). The instance's name
+holds nothing of it. An instance made by hand has none.
 
 ## Revoking
 
@@ -57,7 +69,7 @@ import hashlib
 import re
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import authz, db
 
@@ -70,6 +82,11 @@ PREFIXES = {KIND_API: "whpi_", KIND_PROOF: "whpp_"}
 # The same shape a vantage name has (app/vantages.py): it is printed in the
 # CLI and in the abuse log, so it is restricted here rather than escaped later.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+# How long an instance that signed up keeps its address after its revoke.
+# Thirty days, the first guess of docs/SPEC-open-beta.md. Longer is the
+# owner's call.
+CONTACT_KEPT_AFTER_REVOKE = timedelta(days=30)
 
 # A key is a prefix and 64 hex characters. Anything longer is not a key, and
 # refusing it before hashing keeps a megabyte header from being hashed at all.
@@ -143,6 +160,15 @@ class Issued:
 # and nothing else, on the API key's row only.
 ADDED_COLUMNS = ("last_used_at TEXT",)
 
+# The address an instance that signed up keeps (the section of the module
+# docstring above). Written as (table, column) the way `db.py` writes its
+# own, so a test that looks for every column holding a mail address finds
+# this one too. And when the sweep ended a signup instance for sending no
+# batch and making no proof (`instancesignup.UNUSED_FOR`), which a revoke by
+# hand leaves empty.
+ADDED_INSTANCE_COLUMNS = (("probe_instances", "contact_email TEXT"),
+                          ("probe_instances", "ended_unused_at TEXT"))
+
 
 def init(con: sqlite3.Connection) -> None:
     """Idempotent and additive, the same rule every other init follows."""
@@ -157,11 +183,23 @@ def init(con: sqlite3.Connection) -> None:
     # A read on every call, and the write lock only on the first call ever.
     if not _has_origin(con):
         _add_origin(con)
+    for table, column in ADDED_INSTANCE_COLUMNS:
+        if not _has_column(con, column.split()[0]):
+            try:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc):
+                    raise
+            con.commit()
+
+
+def _has_column(con: sqlite3.Connection, column: str) -> bool:
+    return column in {row[1] for row in
+                      con.execute("PRAGMA table_info(probe_instances)")}
 
 
 def _has_origin(con: sqlite3.Connection) -> bool:
-    return "origin" in {row[1] for row in
-                        con.execute("PRAGMA table_info(probe_instances)")}
+    return _has_column(con, "origin")
 
 
 def _add_origin(con: sqlite3.Connection) -> None:
@@ -210,14 +248,15 @@ def instance_and_key_use(con: sqlite3.Connection, key, kind: str):
     if not isinstance(key, str) or not key or len(key) > MAX_KEY_LENGTH:
         return None, None
     row = con.execute(
-        "SELECT i.*, k.last_used_at AS key_last_used_at FROM probe_instance_keys k"
+        "SELECT i.id, i.name, i.created_at, i.revoked_at, i.origin,"
+        " k.last_used_at FROM probe_instance_keys k"
         " JOIN probe_instances i ON i.id = k.instance_id"
         " WHERE k.key_hash = ? AND k.kind = ?"
         "   AND k.revoked_at IS NULL AND i.revoked_at IS NULL",
         (key_hash(key), kind)).fetchone()
     if row is None:
         return None, None
-    return _instance(row), row["key_last_used_at"]
+    return _instance(row), row[5]
 
 
 def stamp_due(last_used_at, now: datetime | None = None) -> bool:
@@ -290,10 +329,14 @@ def check_name(name) -> str:
     return name.strip()
 
 
+_COLUMNS = "id, name, created_at, revoked_at, origin"
+
+
 def _instance(row) -> Instance:
-    return Instance(id=row["id"], name=row["name"], created_at=row["created_at"],
-                    revoked_at=row["revoked_at"],
-                    origin=row["origin"] if "origin" in row.keys() else None)
+    """From a row of `_COLUMNS`, read by position, so a connection with no
+    row factory reads it the same."""
+    return Instance(id=row[0], name=row[1], created_at=row[2],
+                    revoked_at=row[3], origin=row[4])
 
 
 def _insert_key(con, instance_id: int, kind: str, stamp: str) -> str:
@@ -305,7 +348,7 @@ def _insert_key(con, instance_id: int, kind: str, stamp: str) -> str:
 
 
 def add(con: sqlite3.Connection, name: str, now: datetime | None = None, *,
-        origin: str) -> Issued:
+        origin: str, contact: str | None = None, commit: bool = True) -> Issued:
     """One instance with a fresh key of each kind. Every check runs before the
     first write, so a refused add leaves nothing behind.
 
@@ -313,7 +356,16 @@ def add(con: sqlite3.Connection, name: str, now: datetime | None = None, *,
     an instance without saying how. `instances_cli add`, by hand, passes
     `authz.ORIGIN_INVITED`. Anything a stranger reaches, a signup or a keys
     page, passes `authz.ORIGIN_SIGNUP` unless the owner decides otherwise,
-    and its agents then never prove by presence."""
+    and its agents then never prove by presence.
+
+    `contact` is the address a signup's code went to, already checked by
+    its caller, written in the same insert so an instance that signed up
+    never exists without it. A commit at the end, as always: a caller that
+    began a transaction of its own has its writes committed with this one.
+    `commit=False` leaves the commit to that caller, for a write of its own
+    that names the new instance and must land in the same commit
+    (`instancesignup.collect`, the claim that made it).
+    """
     name = check_name(name)
     if not isinstance(origin, str) or origin not in authz.ORIGINS:
         raise InstanceError(
@@ -322,12 +374,13 @@ def add(con: sqlite3.Connection, name: str, now: datetime | None = None, *,
         raise InstanceError(f"an instance called {name!r} already exists")
     stamp = _now(now)
     cur = con.execute(
-        "INSERT INTO probe_instances (name, created_at, origin) VALUES (?, ?, ?)",
-        (name, stamp, origin))
+        "INSERT INTO probe_instances (name, created_at, origin, contact_email)"
+        " VALUES (?, ?, ?, ?)", (name, stamp, origin, contact))
     instance_id = cur.lastrowid
     api_key = _insert_key(con, instance_id, KIND_API, stamp)
     proof_key = _insert_key(con, instance_id, KIND_PROOF, stamp)
-    con.commit()
+    if commit:
+        con.commit()
     return Issued(by_name(con, name), api_key, proof_key)
 
 
@@ -354,15 +407,39 @@ def reissue(con: sqlite3.Connection, name: str, kind: str,
     return key
 
 
-def revoke(con: sqlite3.Connection, name: str, now: datetime | None = None) -> Instance:
+def reissue_both(con: sqlite3.Connection, name: str,
+                 now: datetime | None = None) -> Issued:
+    """Replace both keys of a live instance in one commit, so whoever held
+    the old pair loses it the moment the new pair exists, and there is never
+    one key of each. The open signup's recollect uses it
+    (`instancesignup.collect`). A caller that began a transaction of its own
+    has its writes committed with this one, as with `add`."""
+    instance = _require_live(con, name)
+    stamp = _now(now)
+    con.execute(
+        "UPDATE probe_instance_keys SET revoked_at = ?"
+        " WHERE instance_id = ? AND revoked_at IS NULL", (stamp, instance.id))
+    api_key = _insert_key(con, instance.id, KIND_API, stamp)
+    proof_key = _insert_key(con, instance.id, KIND_PROOF, stamp)
+    con.commit()
+    return Issued(instance, api_key, proof_key)
+
+
+def revoke(con: sqlite3.Connection, name: str, now: datetime | None = None, *,
+           unused: bool = False) -> Instance:
     """End an instance: both keys, every authorisation it holds, and whatever
     it had queued. Returns the revoked instance. Revoking twice is refused
-    rather than repeated, so the stamp keeps saying when it first happened."""
+    rather than repeated, so the stamp keeps saying when it first happened.
+
+    `unused` is the sweep's, for a signup instance that sent no batch and
+    made no proof (`instancesignup.end_unused`). It is written down, because
+    an address whose instance was revoked by hand may not sign up again
+    while its address is kept, and one that ended unused may."""
     instance = _require_live(con, name)
     moment = now or datetime.now(timezone.utc)
     stamp = _now(moment)
-    con.execute("UPDATE probe_instances SET revoked_at = ? WHERE id = ?",
-                (stamp, instance.id))
+    con.execute("UPDATE probe_instances SET revoked_at = ?, ended_unused_at = ?"
+                " WHERE id = ?", (stamp, stamp if unused else None, instance.id))
     con.execute(
         "UPDATE probe_instance_keys SET revoked_at = ?"
         " WHERE instance_id = ? AND revoked_at IS NULL", (stamp, instance.id))
@@ -383,20 +460,76 @@ def _require_live(con, name: str) -> Instance:
 # ------------------------------------------------------------------ reading
 
 def by_name(con: sqlite3.Connection, name: str) -> Instance | None:
-    row = con.execute("SELECT * FROM probe_instances WHERE name = ?",
+    row = con.execute(f"SELECT {_COLUMNS} FROM probe_instances WHERE name = ?",
                       (name,)).fetchone()
     return None if row is None else _instance(row)
 
 
 def by_id(con: sqlite3.Connection, instance_id: int) -> Instance | None:
-    row = con.execute("SELECT * FROM probe_instances WHERE id = ?",
+    row = con.execute(f"SELECT {_COLUMNS} FROM probe_instances WHERE id = ?",
                       (instance_id,)).fetchone()
     return None if row is None else _instance(row)
 
 
 def list_all(con: sqlite3.Connection) -> list[Instance]:
     return [_instance(row) for row in
-            con.execute("SELECT * FROM probe_instances ORDER BY name")]
+            con.execute(f"SELECT {_COLUMNS} FROM probe_instances ORDER BY name")]
+
+
+def contact_of(con: sqlite3.Connection, instance_id: int) -> str | None:
+    """The address an instance that signed up keeps, or None."""
+    row = con.execute("SELECT contact_email FROM probe_instances WHERE id = ?",
+                      (instance_id,)).fetchone()
+    return None if row is None else row[0]
+
+
+def address_taken(con: sqlite3.Connection, email: str) -> bool:
+    """Whether this address may not sign up for another instance: it has a
+    live one, or one the owner revoked by hand whose address is still kept
+    (`CONTACT_KEPT_AFTER_REVOKE`), decided 27 October 2026. An instance the
+    sweep ended for sending no batch and making no proof does not hold it."""
+    return con.execute(
+        "SELECT 1 FROM probe_instances WHERE contact_email = ?"
+        " AND (revoked_at IS NULL OR ended_unused_at IS NULL) LIMIT 1",
+        (email,)).fetchone() is not None
+
+
+def live_count(con: sqlite3.Connection, origin: str) -> int:
+    """How many instances made this way are not revoked."""
+    return con.execute(
+        "SELECT COUNT(*) FROM probe_instances WHERE origin = ?"
+        " AND revoked_at IS NULL", (origin,)).fetchone()[0]
+
+
+def forget_contacts(con: sqlite3.Connection, now: datetime | None = None) -> int:
+    """Empty the address of every instance revoked longer ago than
+    `CONTACT_KEPT_AFTER_REVOKE`. Returns how many. The instance's row stays,
+    as the record of who could probe what. The connections this runs on
+    overwrite what they delete (`db.forget_what_is_deleted`)."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    # Compared as times and not as text: a stamp with no fraction of a
+    # second and one with a fraction do not sort as text by when they are.
+    due = []
+    for instance_id, revoked_at in con.execute(
+            "SELECT id, revoked_at FROM probe_instances"
+            " WHERE contact_email IS NOT NULL AND revoked_at IS NOT NULL"):
+        try:
+            revoked = datetime.fromisoformat(revoked_at)
+        except (TypeError, ValueError):
+            # A stamp nothing can read: the address goes, the safe way round.
+            due.append(instance_id)
+            continue
+        if revoked.tzinfo is None:
+            revoked = revoked.replace(tzinfo=timezone.utc)
+        if moment - revoked >= CONTACT_KEPT_AFTER_REVOKE:
+            due.append(instance_id)
+    for instance_id in due:
+        con.execute("UPDATE probe_instances SET contact_email = NULL WHERE id = ?",
+                    (instance_id,))
+    con.commit()
+    return len(due)
 
 
 def instance_for_key(con: sqlite3.Connection, key, kind: str) -> Instance | None:

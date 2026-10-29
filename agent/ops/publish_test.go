@@ -109,3 +109,74 @@ func TestPublishSendsTheTreeToThatDestination(t *testing.T) {
 		t.Errorf("publish.sh's rsync lines are %q, want exactly one, sending dist-repo/ to \"$DEST\"", rsyncs)
 	}
 }
+
+// ------------------------------------------------- the public repository's clone
+
+// publishPublic evaluates the script's own PUBLIC= line under its `set -eu`,
+// with env added to an environment that has only PATH and HOME.
+func publishPublic(t *testing.T, env ...string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("publish.sh is a POSIX shell script")
+	}
+	var found []string
+	for _, line := range strings.Split(publishSource(t), "\n") {
+		if strings.HasPrefix(line, "PUBLIC=") {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("publish.sh has %d lines starting with PUBLIC=, want exactly one: %v", len(found), found)
+	}
+	cmd := exec.Command("sh", "-c", "set -eu\n"+found[0]+"\nprintf '%s' \"$PUBLIC\"\n")
+	cmd.Env = append([]string{"PATH=/bin:/usr/bin", "HOME=/home/owner"}, env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("evaluating PUBLIC failed: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+func TestPublishReadsThePublicReleaseFromTheOwnersCloneUnlessToldOtherwise(t *testing.T) {
+	cases := []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"nothing set", nil, "/home/owner/whichports-public"},
+		{"another clone for one run", []string{"WHICHPORTS_PUBLIC=/elsewhere/public"}, "/elsewhere/public"},
+		{"an override that is empty", []string{"WHICHPORTS_PUBLIC="}, "/home/owner/whichports-public"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := publishPublic(t, tc.env...); got != tc.want {
+				t.Errorf("the clone is %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The guard reads the public repository before this commit is tagged, so a
+// refusal leaves no tag here and builds nothing. The stamp comes after the
+// tree is built, since `make repo` empties dist-repo first.
+func TestThePublicReleaseIsCheckedBeforeAnythingIsTaggedOrBuilt(t *testing.T) {
+	script := publishSource(t)
+	at := func(line string) int {
+		t.Helper()
+		if n := strings.Count(script, "\n"+line+"\n"); n != 1 {
+			t.Fatalf("publish.sh has %d lines %q, want exactly one", n, line)
+		}
+		return strings.Index(script, "\n"+line+"\n")
+	}
+	guard := at(`sh ops/require-public-release.sh "$PUBLIC" "$TAG"`)
+	tag := at(`  git tag "$TAG"`)
+	build := at(`SIGNING_KEY_FILE="$TMPKEY" NFPM_PASSPHRASE="$PASS" make package-signed`)
+	repo := at(`SIGNING_KEY_FILE="$TMPKEY" REPO_GPG_PASSPHRASE="$PASS" make repo`)
+	stamp := at(`python3 ../selfhost/release_installer.py --repository "$PUBLIC" "$TAG" > dist-repo/selfhost.sh`)
+	if !(guard < tag && guard < build) {
+		t.Errorf("the public release is checked at %d, after the tag at %d or the build at %d", guard, tag, build)
+	}
+	if !(repo < stamp) {
+		t.Errorf("the installer is stamped at %d, before make repo at %d empties the tree", stamp, repo)
+	}
+}

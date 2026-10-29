@@ -67,8 +67,12 @@ INSTANCE = "instance"
 REFUSERS = (PROBER_API, INSTANCE)
 
 # The classes an answer here can carry: the registry's own codes, and the
-# three that are about our API rather than about the address.
-API_CODES = frozenset({dispatch.NO_ANSWER, "unknown_key", "malformed_request"})
+# four that are about our API rather than about the address. Our API counts
+# an instance's proofs by the hour and reads one challenge at most once
+# every few seconds (`proberapi.PROOF_STARTS_PER_HOUR`), and says
+# `over_instance_pace` past that.
+API_CODES = frozenset({dispatch.NO_ANSWER, "unknown_key", "malformed_request",
+                       "over_instance_pace"})
 CODES = authz.PROOF_CODES | API_CODES
 
 
@@ -145,6 +149,7 @@ CODE_WORDS = {
     "no_answer": "no answer",
     "unknown_key": "the key of this instance is not known",
     "malformed_request": "the request could not be read",
+    "over_instance_pace": "too many proofs asked for, try again in a while",
 }
 
 
